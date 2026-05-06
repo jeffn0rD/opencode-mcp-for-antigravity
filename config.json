@@ -1,0 +1,33 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 4096,
+    "launchCommand": "opencode",
+    "launchArgs": ["serve"],
+    "startupTimeoutMs": 8000,
+    "pollIntervalMs": 200,
+    "leaveRunningOnExit": true,
+    "auth": {
+      "passwordEnvVar": "OPENCODE_SERVER_PASSWORD",
+      "usernameEnvVar": "OPENCODE_SERVER_USERNAME",
+      "defaultUsername": "opencode"
+    }
+  },
+  "mcp": {
+    "serverName": "opencode",
+    "version": "1.0.0",
+    "selfRegistration": {
+      "enabled": true,
+      "configPath": "~/.gemini/antigravity/mcp_config.json"
+    }
+  },
+  "tools": {
+    "include": ["*"],
+    "exclude": ["tui_*"]
+  },
+  "messages": {
+    "waitForIdle": true,
+    "maxWaitMs": 300000,
+    "pollIntervalMs": 500
+  }
+}
