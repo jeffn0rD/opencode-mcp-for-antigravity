@@ -193,6 +193,7 @@ async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
 
     let buffer = "";
     let resolved = false;
+    let lastEventTime = Date.now();
 
     function finish(result) {
       if (resolved) return;
@@ -208,23 +209,29 @@ async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
 
     async function connect() {
       try {
+        log("debug", `Connecting to SSE stream for session ${sessionId}...`);
         const res = await fetch(url, { headers, signal: AbortSignal.timeout(maxWaitMs + 5000) });
         if (!res.ok) {
           abort(new Error(`SSE connection failed: HTTP ${res.status}`));
           return;
         }
 
+        log("debug", `SSE connection established for session ${sessionId}`);
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
 
         while (!resolved) {
           if (Date.now() > deadline) {
-            abort(new Error(`Timed out waiting for session ${sessionId} to become idle`));
+            abort(new Error(`Timed out waiting for session ${sessionId} to become idle (last event ${Date.now() - lastEventTime}ms ago)`));
             return;
           }
 
           const { done, value } = await reader.read();
-          if (done) { finish({ timedOut: false, reason: "stream_ended" }); return; }
+          if (done) { 
+            log("debug", `SSE stream ended for session ${sessionId}`);
+            finish({ timedOut: false, reason: "stream_ended" }); 
+            return; 
+          }
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
@@ -236,6 +243,8 @@ async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
             if (!raw) continue;
             try {
               const envelope = JSON.parse(raw);
+              log("debug", `Received SSE event: ${JSON.stringify(envelope).substring(0, 200)}`);
+              
               // Global event envelope: { directory, payload: { type, properties } }
               const event = envelope.payload || envelope;
               if (onEvent) onEvent(event);
@@ -243,21 +252,33 @@ async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
               const t = event.type;
               const props = event.properties || {};
 
+              // More flexible matching for session idle events
+              const isMatchingSession = 
+                props.sessionID === sessionId || 
+                props.session_id === sessionId ||
+                props.sessionId === sessionId;
+
               if (
-                (t === "session.idle" && props.sessionID === sessionId) ||
+                (t === "session.idle" && isMatchingSession) ||
                 (t === "session.status" &&
-                  props.sessionID === sessionId &&
-                  props.status?.type === "idle")
+                  isMatchingSession &&
+                  (props.status?.type === "idle" || props.status === "idle")) ||
+                (t === "message.complete" && isMatchingSession)
               ) {
+                log("debug", `Session ${sessionId} became idle (event type: ${t})`);
                 finish({ timedOut: false, reason: "idle" });
                 return;
               }
 
-              if (t === "session.error" && (props.sessionID === sessionId || !props.sessionID)) {
+              if (t === "session.error" && (isMatchingSession || !props.sessionID)) {
+                log("warn", `Session error for ${sessionId}: ${props.error}`);
                 finish({ timedOut: false, reason: "error", error: props.error });
                 return;
               }
-            } catch {
+
+              lastEventTime = Date.now();
+            } catch (e) {
+              log("debug", `Failed to parse SSE event: ${e.message}`);
               // ignore parse errors on individual events
             }
           }
@@ -677,6 +698,8 @@ if (isToolEnabled("message_send")) {
       noReply: z.boolean().optional().describe("If true, send without waiting for AI reply"),
     },
     async ({ sessionId, text, providerID, modelID, agent, noReply }) => {
+      log("debug", `message_send called for session ${sessionId}: ${text.substring(0, 100)}...`);
+      
       const body = {
         parts: [{ type: "text", text }],
       };
@@ -688,26 +711,41 @@ if (isToolEnabled("message_send")) {
       if (agent) body.agent = agent;
       if (noReply) body.noReply = true;
 
+      log("debug", `Sending message to opencode API: ${JSON.stringify(body).substring(0, 200)}...`);
       const result = await apiPost(`/session/${sessionId}/message`, body);
-      if (!result.ok) return err(`HTTP ${result.status}`, result.data);
+      if (!result.ok) {
+        log("error", `Failed to send message: HTTP ${result.status}`);
+        return err(`HTTP ${result.status}`, result.data);
+      }
+
+      log("debug", `Message sent successfully, response: ${JSON.stringify(result.data).substring(0, 200)}...`);
 
       // If noReply or waitForIdle is disabled, return immediately
       if (noReply || !MSG_WAIT_IDLE) {
+        log("debug", `Returning immediately (noReply=${noReply}, MSG_WAIT_IDLE=${MSG_WAIT_IDLE})`);
         return ok(formatMessageResponse(result.data));
       }
 
       // Wait for the session to become idle via SSE
       try {
+        log("debug", `Waiting for session ${sessionId} to become idle (timeout: ${MSG_MAX_WAIT}ms)`);
         const idleResult = await waitForSessionIdle(sessionId, MSG_MAX_WAIT);
         const formatted = formatMessageResponse(result.data);
+        
         if (idleResult.error) {
           formatted._sessionError = idleResult.error;
         }
+        
+        log("debug", `Session ${sessionId} wait completed: ${JSON.stringify(idleResult)}`);
         return ok(formatted);
       } catch (e) {
         // SSE failed — still return the message data we have
-        log("warn", `SSE wait failed: ${e.message} — returning initial response`);
-        return ok({ ...formatMessageResponse(result.data), _sseWarning: e.message });
+        log("error", `SSE wait failed: ${e.message} — returning initial response`);
+        return ok({ 
+          ...formatMessageResponse(result.data), 
+          _sseWarning: e.message,
+          _debug: { sessionId, timeout: MSG_MAX_WAIT, error: e.message }
+        });
       }
     }
   );
