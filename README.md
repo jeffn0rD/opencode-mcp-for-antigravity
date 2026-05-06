@@ -20,7 +20,7 @@ An MCP (Model Context Protocol) server that wraps the [opencode](https://opencod
 ## Installation
 
 ```bash
-git clone <this-repo>
+git clone opencode-mcp-for-antigravity
 cd opencode-mcp
 npm install
 ```
