@@ -42,6 +42,7 @@ if (isToolEnabled("session_create")) {
     },
     async ({ directory, title, parentID }) => {
       if (directory) {
+        sessionManager.setCurrentDirectory(directory);
         const sessionId = await sessionManager.getSessionIdForDirectory(directory, title, parentID);
         return apiResult(await apiGet(`/session/${sessionId}`));
       }
@@ -61,6 +62,7 @@ if (isToolEnabled("session_get")) {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
     async ({ directory }) => {
+      if (directory) sessionManager.setCurrentDirectory(directory);
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       return apiResult(await apiGet(`/session/${sessionId}`));
     }
@@ -299,6 +301,7 @@ if (isToolEnabled("message_send")) {
       noReply: z.boolean().optional().describe("If true, send without waiting for AI reply"),
     },
     async ({ directory, text, providerID, modelID, agent, noReply }) => {
+      if (directory) sessionManager.setCurrentDirectory(directory);
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = {
         parts: [{ type: "text", text }],
