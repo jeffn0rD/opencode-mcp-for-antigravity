@@ -364,7 +364,7 @@ Tools are grouped by domain. All are enabled by default except TUI tools.
 
 | Tool | Description |
 |---|---|
-| `session_update` | Rename a session |
+| `session_title` | Rename a session |
 | `session_delete` | Delete a session and all its data |
 | `session_fork` | Fork a session at a specific message |
 | `session_share` / `session_unshare` | Share/unshare a session publicly |

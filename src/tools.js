@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { isToolEnabled, config, MSG_WAIT_IDLE, MSG_MAX_WAIT } from "./config.js";
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut, apiResult, err, ok, formatMessageResponse, waitForSessionIdle } from "./api.js";
-import { sessionManager } from "./session.js";
 import { log, sleep } from "./logger.js";
 
 export function registerTools(server) {
@@ -25,13 +24,25 @@ if (isToolEnabled("health_check")) {
 if (isToolEnabled("session_list")) {
   server.tool(
     "session_list",
-    "List all opencode sessions",
+    "List all opencode sessions with their sessionId, title, and directory. Optionally filter by title match.",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      title: z.string().optional().describe("Filter sessions by title (case-insensitive substring match)"),
     },
-    async ({ directory }) => {
-      const dir = directory || process.cwd();
-      return apiResult(await apiGet("/session", {}, { directory: dir }));
+    async ({ title }) => {
+      const result = await apiGet("/session");
+      if (!result.ok) return err(`HTTP ${result.status}`, result.data);
+      let sessions = Array.isArray(result.data) ? result.data : [];
+      if (title) {
+        const lower = title.toLowerCase();
+        sessions = sessions.filter((s) => (s.title || "").toLowerCase().includes(lower));
+      }
+      return ok(sessions.map((s) => ({
+        sessionId: s.id,
+        title: s.title || null,
+        directory: s.directory || null,
+        status: s.status || null,
+        created: s.time?.created || null,
+      })));
     }
   );
 }
@@ -39,21 +50,26 @@ if (isToolEnabled("session_list")) {
 if (isToolEnabled("session_create")) {
   server.tool(
     "session_create",
-    "Create a new opencode session",
+    "Create a new opencode session. Always creates a fresh session. Returns the sessionId for use with other tools.",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
-      title: z.string().optional().describe("Optional title for the session"),
+      title: z.string().optional().describe("Optional name/title for the session (use with session_list to find it later)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       parentID: z.string().optional().describe("Optional parent session ID to create a child session"),
     },
-    async ({ directory, title, parentID }) => {
-      if (directory) {
-        const sessionId = await sessionManager.getSessionIdForDirectory(directory, title, parentID);
-        return apiResult(await apiGet(`/session/${sessionId}`));
-      }
+    async ({ title, directory, parentID }) => {
       const body = {};
       if (title) body.title = title;
       if (parentID) body.parentID = parentID;
-      return apiResult(await apiPost("/session", body, { directory: process.cwd() }));
+      const dir = directory || process.cwd();
+      const result = await apiPost("/session", body, { directory: dir });
+      if (!result.ok) return err(`HTTP ${result.status}`, result.data);
+      if (!result.data?.id) return err("Invalid response from server: missing session id", result.data);
+      return ok({
+        sessionId: result.data.id,
+        title: result.data.title || title || null,
+        directory: result.data.directory || dir,
+        status: result.data.status || null,
+      });
     }
   );
 }
@@ -63,10 +79,10 @@ if (isToolEnabled("session_get")) {
     "session_get",
     "Get details of a specific session by ID",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiGet(`/session/${sessionId}`, {}, { directory: dir }));
     }
@@ -78,10 +94,10 @@ if (isToolEnabled("session_delete")) {
     "session_delete",
     "Delete a session and all its data",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiDelete(`/session/${sessionId}`, { directory: dir }));
     }
@@ -93,11 +109,11 @@ if (isToolEnabled("session_title")) {
     "session_title",
     "Update the title of an existing session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       title: z.string().describe("New title for the session"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory, title }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, title, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiPatch(`/session/${sessionId}`, { title }, { directory: dir }));
     }
@@ -109,10 +125,10 @@ if (isToolEnabled("session_abort")) {
     "session_abort",
     "Abort the current running task in a session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/abort`, {}, { directory: dir }));
     }
@@ -124,10 +140,10 @@ if (isToolEnabled("session_fork")) {
     "session_fork",
     "Fork a session into a new one",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/fork`, {}, { directory: dir }));
     }
@@ -139,11 +155,11 @@ if (isToolEnabled("session_share")) {
     "session_share",
     "Share a session with a note",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       note: z.string().optional().describe("Optional note to include with the share"),
     },
-    async ({ directory, note }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory, note }) => {
       const dir = directory || process.cwd();
       const body = note ? { note } : {};
       return apiResult(await apiPost(`/session/${sessionId}/share`, body, { directory: dir }));
@@ -156,10 +172,10 @@ if (isToolEnabled("session_unshare")) {
     "session_unshare",
     "Stop sharing a session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiDelete(`/session/${sessionId}/share`, { directory: dir }));
     }
@@ -171,12 +187,12 @@ if (isToolEnabled("session_summarize")) {
     "session_summarize",
     "Summarize a session (currently no-op placeholder)",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       providerID: z.string().optional().describe("AI provider ID"),
       modelID: z.string().optional().describe("Model ID to use for summarization"),
     },
-    async ({ directory, providerID, modelID }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory, providerID, modelID }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/summarize`, { providerID, modelID }, { directory: dir }));
     }
@@ -188,11 +204,11 @@ if (isToolEnabled("session_diff")) {
     "session_diff",
     "Get the file diff for a session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       messageID: z.string().optional().describe("Optional message ID to diff up to"),
     },
-    async ({ directory, messageID }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory, messageID }) => {
       const dir = directory || process.cwd();
       const query = messageID ? { messageID } : {};
       return apiResult(await apiGet(`/session/${sessionId}/diff`, query, { directory: dir }));
@@ -205,10 +221,10 @@ if (isToolEnabled("session_revert")) {
     "session_revert",
     "Revert all changes made by a session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/revert`, {}, { directory: dir }));
     }
@@ -220,10 +236,10 @@ if (isToolEnabled("session_unrevert")) {
     "session_unrevert",
     "Un-revert a previously reverted session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/unrevert`, {}, { directory: dir }));
     }
@@ -235,10 +251,10 @@ if (isToolEnabled("session_todo_list")) {
     "session_todo_list",
     "Get the todo/task list for a session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiGet(`/session/${sessionId}/todo`, {}, { directory: dir }));
     }
@@ -250,10 +266,10 @@ if (isToolEnabled("session_children")) {
     "session_children",
     "Get child sessions of a session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory }) => {
       const dir = directory || process.cwd();
       return apiResult(await apiGet(`/session/${sessionId}/children`, {}, { directory: dir }));
     }
@@ -274,13 +290,13 @@ if (isToolEnabled("permission_respond")) {
     "permission_respond",
     "Respond to a permission request from opencode (e.g. allow/deny a file edit or bash command)",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       permissionID: z.string().describe("The permission request ID"),
       response: z.string().describe("The response: 'allow', 'deny', or 'always'"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       remember: z.boolean().optional().describe("Whether to remember this decision"),
     },
-    async ({ directory, permissionID, response, remember }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, permissionID, response, directory, remember }) => {
       const dir = directory || process.cwd();
       const body = { response };
       if (remember !== undefined) body.remember = remember;
@@ -305,15 +321,15 @@ if (isToolEnabled("message_send")) {
       "Returns the assistant's text response plus a summary of any tools it used.",
     ].join(" "),
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       text: z.string().describe("The message/prompt text to send"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       providerID: z.string().optional().describe("AI provider ID (e.g. 'anthropic', 'openai')"),
       modelID: z.string().optional().describe("Model ID (e.g. 'claude-opus-4-5', 'gpt-4o')"),
       agent: z.string().optional().describe("Agent name to use for this message"),
       noReply: z.boolean().optional().describe("If true, send without waiting for AI reply"),
     },
-    async ({ directory, text, providerID, modelID, agent, noReply }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory, text, providerID, modelID, agent, noReply }) => {
       const dir = directory || process.cwd();
       const body = {
         parts: [{ type: "text", text }],
@@ -347,7 +363,7 @@ if (isToolEnabled("message_send")) {
           null,
           async () => {
             log("debug", `SSE connected, sending message: ${JSON.stringify(body).substring(0, 200)}...`);
-            const result = await apiPost(`/session/${sessionId}/message`, body, { directory: dir });
+            const result = await apiPost(`/session/${sessionId}/message`, body, { directory: dir, timeout: MSG_MAX_WAIT });
             if (!result.ok) {
               throw new Error(`HTTP ${result.status}: ${JSON.stringify(result.data)}`);
             }
@@ -378,11 +394,11 @@ if (isToolEnabled("message_list")) {
     "message_list",
     "List all messages in a session",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       limit: z.number().optional().describe("Maximum number of messages to return"),
     },
-    async ({ directory, limit }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory, limit }) => {
       const dir = directory || process.cwd();
       const query = limit ? { limit } : {};
       const result = await apiGet(`/session/${sessionId}/message`, query, { directory: dir });
@@ -412,11 +428,11 @@ if (isToolEnabled("message_get")) {
     "message_get",
     "Get full details of a specific message including all parts",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       messageId: z.string().describe("The message ID"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
     },
-    async ({ directory, messageId }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, messageId, directory }) => {
       const dir = directory || process.cwd();
       const result = await apiGet(`/session/${sessionId}/message/${messageId}`, {}, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
@@ -430,14 +446,14 @@ if (isToolEnabled("prompt_async")) {
     "prompt_async",
     "Send a message asynchronously — returns immediately without waiting for the AI response (fire and forget)",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       text: z.string().describe("The prompt text to send"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       providerID: z.string().optional().describe("AI provider ID"),
       modelID: z.string().optional().describe("Model ID"),
       agent: z.string().optional().describe("Agent name"),
     },
-    async ({ directory, text, providerID, modelID, agent }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, text, directory, providerID, modelID, agent }) => {
       const dir = directory || process.cwd();
       const body = { parts: [{ type: "text", text }] };
       if (providerID || modelID) {
@@ -458,14 +474,14 @@ if (isToolEnabled("session_command")) {
     "session_command",
     "Execute a slash command in a session (e.g. /compact, /clear)",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       command: z.string().describe("The slash command name (without the slash, e.g. 'compact')"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       arguments: z.string().optional().describe("Arguments to pass to the command"),
       agent: z.string().optional().describe("Agent to use"),
       modelID: z.string().optional().describe("Model ID to use"),
     },
-    async ({ directory, command, arguments: args, agent, modelID }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, command, directory, arguments: args, agent, modelID }) => {
       const dir = directory || process.cwd();
       const body = { command, arguments: args || "" };
       if (agent) body.agent = agent;
@@ -482,13 +498,13 @@ if (isToolEnabled("session_shell")) {
     "session_shell",
     "Run a shell command within an opencode session context",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       command: z.string().describe("The shell command to run"),
       agent: z.string().describe("Agent to use for this shell command"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       modelID: z.string().optional().describe("Model ID to use"),
     },
-    async ({ directory, command, agent, modelID }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, command, agent, directory, modelID }) => {
       const dir = directory || process.cwd();
       const body = { command, agent };
       if (modelID) body.model = { modelID };
@@ -818,13 +834,13 @@ if (isToolEnabled("session_init")) {
     "session_init",
     "Analyze the app in a session and create AGENTS.md",
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       providerID: z.string().describe("AI provider ID to use for analysis"),
       modelID: z.string().describe("Model ID to use for analysis"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       messageID: z.string().optional().describe("Optional message ID"),
     },
-    async ({ directory, providerID, modelID, messageID }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, providerID, modelID, directory, messageID }) => {
       const dir = directory || process.cwd();
       const body = { providerID, modelID };
       if (messageID) body.messageID = messageID;
@@ -846,12 +862,12 @@ if (isToolEnabled("session_poll_status")) {
       "Returns immediately if the session is already idle.",
     ].join(" "),
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       timeoutMs: z.number().optional().describe("Max time to wait in milliseconds (default: 120000 = 2 minutes)"),
       pollIntervalMs: z.number().optional().describe("How often to check status in milliseconds (default: 800)"),
     },
-    async ({ directory, timeoutMs = 120000, pollIntervalMs = 800 }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory, timeoutMs = 120000, pollIntervalMs = 800 }) => {
       const dir = directory || process.cwd();
       const deadline = Date.now() + timeoutMs;
       let attempts = 0;
@@ -899,11 +915,11 @@ if (isToolEnabled("session_get_response")) {
       "Returns the most recent assistant message text, tool usage summary, cost, and token counts.",
     ].join(" "),
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       limit: z.number().optional().describe("Number of recent messages to fetch (default: 10, increase if needed)"),
     },
-    async ({ directory, limit = 10 }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, directory, limit = 10 }) => {
       const dir = directory || process.cwd();
       const result = await apiGet(`/session/${sessionId}/message`, { limit }, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
@@ -935,16 +951,16 @@ if (isToolEnabled("prompt_and_wait")) {
       "Returns the full assistant response text once complete.",
     ].join(" "),
     {
-      directory: z.string().optional().describe("The working directory (maps to a session)"),
+      sessionId: z.string().describe("Session ID (returned by session_create)"),
       text: z.string().describe("The prompt text to send"),
+      directory: z.string().optional().describe("Working directory for project scoping"),
       providerID: z.string().optional().describe("AI provider ID (e.g. 'anthropic', 'openai')"),
       modelID: z.string().optional().describe("Model ID (e.g. 'claude-opus-4-5', 'gpt-4o')"),
       agent: z.string().optional().describe("Agent name to use"),
       timeoutMs: z.number().optional().describe("Max wait time in milliseconds (default: 300000 = 5 minutes)"),
       pollIntervalMs: z.number().optional().describe("Polling interval in milliseconds (default: 800)"),
     },
-    async ({ directory, text, providerID, modelID, agent, timeoutMs = 300000, pollIntervalMs = 800 }) => {
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+    async ({ sessionId, text, directory, providerID, modelID, agent, timeoutMs = 300000, pollIntervalMs = 800 }) => {
       const dir = directory || process.cwd();
       // Step 1: Send asynchronously
       const body = { parts: [{ type: "text", text }] };
@@ -969,17 +985,21 @@ if (isToolEnabled("prompt_and_wait")) {
           return err(`Failed to poll status: HTTP ${statusRes.status}`, statusRes.data);
         }
 
-        const s = statusRes.data?.[sessionId];
-        if (!s) {
+        const sessionStatus = statusRes.data?.[sessionId];
+        if (!sessionStatus) {
           return err(`Session '${sessionId}' not found in status check`, statusRes.data);
         }
 
-        if (s.status?.type === "idle") {
+        if (sessionStatus.type === "idle") {
           break; // Exit loop to fetch response
         }
 
-        if (s.status?.type === "error") {
-          return err("Session error", s.status.error || s.status);
+        if (sessionStatus.type === "error") {
+          return err("Session error", sessionStatus.error || sessionStatus);
+        }
+
+        if (sessionStatus.type === "retry") {
+          log("info", `Session ${sessionId} is retrying: ${sessionStatus.message}`);
         }
 
         await sleep(pollIntervalMs);
@@ -1024,13 +1044,47 @@ over opencode sessions, messages, files, and configuration.
 
 ---
 
+## Managing Sessions
+
+Every session is associated with a project directory but is identified by a
+**sessionId**. You create sessions explicitly and pass the sessionId to tools.
+
+\`\`\`
+s = session_create(title: "fix login bug", directory: "/my/project")
+// → { sessionId: "abc123", title: "fix login bug", directory: "/my/project" }
+
+message_send(sessionId: s.sessionId, text: "Fix the JWT validation")
+\`\`\`
+
+### Finding existing sessions
+
+\`\`\`
+session_list()                        → all sessions with id, title, directory
+session_list(title: "fix login bug")  → filter by title (substring match)
+\`\`\`
+
+### Multiple sessions per directory
+
+Since sessions are identified by sessionId (not directory), you can run
+multiple independent sessions in the same project:
+
+\`\`\`
+s1 = session_create(title: "refactor auth", directory: "/my/project")
+s2 = session_create(title: "write tests", directory: "/my/project")
+
+prompt_async(sessionId: s1.sessionId, text: "Refactor auth module")
+prompt_async(sessionId: s2.sessionId, text: "Write tests")
+\`\`\`
+
+---
+
 ## Quick Start Workflow
 
 \`\`\`
-1. session_create          → get a sessionId
-2. message_send            → send a prompt, block until response complete
-3. session_diff            → see what files were changed
-4. session_delete          → clean up when done
+1. session_create(title: "my task")            → returns { sessionId, title, directory }
+2. message_send(sessionId: "...", text: "...") → send a prompt, block until response complete
+3. session_diff(sessionId: "...")              → see what files were changed
+4. session_delete(sessionId: "...")            → clean up when done
 \`\`\`
 
 ---
@@ -1062,7 +1116,8 @@ polling instead of SSE. Use if SSE is unreliable.
 
 | Step | Tool | Notes |
 |------|------|-------|
-| Create | \`session_create\` | Optionally pass a \`title\` |
+| Create | \`session_create\` | Always creates fresh; optionally pass \`title\` + \`directory\` |
+| List | \`session_list\` | Find sessions by name or see all |
 | Send prompts | \`message_send\` | Main interaction loop |
 | Check progress | \`session_todo_list\` | AI's self-tracked tasks |
 | See changes | \`session_diff\` | Files modified this session |
@@ -1079,18 +1134,18 @@ Use async when running multiple sessions in parallel:
 
 \`\`\`
 // Start two sessions in parallel
-s1 = session_create("Refactor auth module")
-s2 = session_create("Write unit tests")
+s1 = session_create(title: "Refactor auth module")
+s2 = session_create(title: "Write unit tests")
 
-prompt_async(s1.id, "Refactor the auth module to use JWT")
-prompt_async(s2.id, "Write unit tests for the user service")
+prompt_async(sessionId: s1.sessionId, text: "Refactor the auth module to use JWT")
+prompt_async(sessionId: s2.sessionId, text: "Write unit tests for the user service")
 
 // Poll both
-session_poll_status(s1.id)   // blocks until s1 idle
-session_get_response(s1.id)  // fetch s1 result
+session_poll_status(sessionId: s1.sessionId)   // blocks until s1 idle
+session_get_response(sessionId: s1.sessionId)  // fetch s1 result
 
-session_poll_status(s2.id)   // blocks until s2 idle
-session_get_response(s2.id)  // fetch s2 result
+session_poll_status(sessionId: s2.sessionId)   // blocks until s2 idle
+session_get_response(sessionId: s2.sessionId)  // fetch s2 result
 \`\`\`
 
 ---
@@ -1138,7 +1193,7 @@ override the default model for a specific message.
 
 ### Sessions
 \`session_list\`, \`session_create\`, \`session_get\`, \`session_delete\`,
-\`session_update\`, \`session_abort\`, \`session_fork\`, \`session_share\`,
+\`session_title\`, \`session_abort\`, \`session_fork\`, \`session_share\`,
 \`session_unshare\`, \`session_diff\`, \`session_revert\`, \`session_unrevert\`,
 \`session_summarize\`, \`session_children\`, \`session_status\`,
 \`session_todo_list\`, \`session_init\`, \`session_poll_status\`
