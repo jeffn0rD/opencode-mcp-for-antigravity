@@ -129,7 +129,7 @@ export function formatMessageResponse(msgResponse) {
   };
 }
 
-export async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
+export async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null, onConnected = null) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + maxWaitMs;
     const url = `${BASE_URL}/event`;
@@ -137,11 +137,12 @@ export async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
 
     let buffer = "";
     let resolved = false;
+    let connectedResult = undefined;
 
     function finish(result) {
       if (resolved) return;
       resolved = true;
-      resolve(result);
+      resolve(connectedResult !== undefined ? { ...result, connectedResult } : result);
     }
 
     function abort(reason) {
@@ -156,6 +157,18 @@ export async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
         if (!res.ok) {
           abort(new Error(`SSE connection failed: HTTP ${res.status}`));
           return;
+        }
+
+        // SSE stream is live — invoke onConnected before waiting for events.
+        // This lets callers send a message with confidence that no idle event
+        // will be missed (avoids the race between POST → SSE connect).
+        if (onConnected) {
+          try {
+            connectedResult = await onConnected();
+          } catch (e) {
+            abort(e);
+            return;
+          }
         }
 
         const reader = res.body.getReader();

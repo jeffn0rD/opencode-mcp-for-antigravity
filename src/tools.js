@@ -309,43 +309,49 @@ if (isToolEnabled("message_send")) {
         if (modelID) body.model.modelID = modelID;
       }
       if (agent) body.agent = agent;
-      if (noReply) body.noReply = true;
 
-      log("debug", `Sending message to opencode API: ${JSON.stringify(body).substring(0, 200)}...`);
-      const result = await apiPost(`/session/${sessionId}/message`, body);
-      if (!result.ok) {
-        log("error", `Failed to send message: HTTP ${result.status}`);
-        return err(`HTTP ${result.status}`, result.data);
-      }
-
-      log("debug", `Message sent successfully, response: ${JSON.stringify(result.data).substring(0, 200)}...`);
-
-      // If noReply or waitForIdle is disabled, return immediately
+      // Fast path: no waiting needed
       if (noReply || !MSG_WAIT_IDLE) {
-        log("debug", `Returning immediately (noReply=${noReply}, MSG_WAIT_IDLE=${MSG_WAIT_IDLE})`);
+        body.noReply = true;
+        log("debug", `Sending message (no wait): ${JSON.stringify(body).substring(0, 200)}...`);
+        const result = await apiPost(`/session/${sessionId}/message`, body);
+        if (!result.ok) {
+          return err(`HTTP ${result.status}`, result.data);
+        }
+        log("debug", `Message sent, returning immediately`);
         return ok(formatMessageResponse(result.data));
       }
 
-      // Wait for the session to become idle via SSE
+      // Normal path: establish SSE stream FIRST, then send the message.
+      // This avoids the race where the session becomes idle before the SSE
+      // listener is connected, causing message_send to hang forever.
       try {
-        log("debug", `Waiting for session ${sessionId} to become idle (timeout: ${MSG_MAX_WAIT}ms)`);
-        const idleResult = await waitForSessionIdle(sessionId, MSG_MAX_WAIT);
-        const formatted = formatMessageResponse(result.data);
-        
+        const idleResult = await waitForSessionIdle(
+          sessionId,
+          MSG_MAX_WAIT,
+          null,
+          async () => {
+            log("debug", `SSE connected, sending message: ${JSON.stringify(body).substring(0, 200)}...`);
+            const result = await apiPost(`/session/${sessionId}/message`, body);
+            if (!result.ok) {
+              throw new Error(`HTTP ${result.status}: ${JSON.stringify(result.data)}`);
+            }
+            log("debug", `Message sent, response: ${JSON.stringify(result.data).substring(0, 200)}...`);
+            return result.data;
+          }
+        );
+
+        log("debug", `Session ${sessionId} wait completed: ${JSON.stringify(idleResult)}`);
+        const formatted = formatMessageResponse(idleResult.connectedResult);
+
         if (idleResult.error) {
           formatted._sessionError = idleResult.error;
         }
-        
-        log("debug", `Session ${sessionId} wait completed: ${JSON.stringify(idleResult)}`);
+
         return ok(formatted);
       } catch (e) {
-        // SSE failed — still return the message data we have
-        log("error", `SSE wait failed: ${e.message} — returning initial response`);
-        return ok({ 
-          ...formatMessageResponse(result.data), 
-          _sseWarning: e.message,
-          _debug: { sessionId, timeout: MSG_MAX_WAIT, error: e.message }
-        });
+        log("error", `message_send failed: ${e.message}`);
+        return err(e.message);
       }
     }
   );
