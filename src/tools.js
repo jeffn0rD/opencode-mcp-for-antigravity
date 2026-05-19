@@ -26,8 +26,13 @@ if (isToolEnabled("session_list")) {
   server.tool(
     "session_list",
     "List all opencode sessions",
-    {},
-    async () => apiResult(await apiGet("/session"))
+    {
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
+    },
+    async ({ directory }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet("/session", {}, { directory: dir }));
+    }
   );
 }
 
@@ -63,8 +68,9 @@ if (isToolEnabled("session_get")) {
     },
     async ({ directory }) => {
       if (directory) sessionManager.setCurrentDirectory(directory);
-      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiGet(`/session/${sessionId}`));
+const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet(`/session/${sessionId}`, {}, { directory: dir }));
     }
   );
 }
@@ -83,17 +89,18 @@ if (isToolEnabled("session_delete")) {
   );
 }
 
-if (isToolEnabled("session_update")) {
+if (isToolEnabled("session_title")) {
   server.tool(
-    "session_update",
-    "Update session properties (e.g. rename it)",
+    "session_title",
+    "Update the title of an existing session",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
       title: z.string().describe("New title for the session"),
     },
     async ({ directory, title }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiPatch(`/session/${sessionId}`, { title }));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiPatch(`/session/${sessionId}`, { title }, { directory: dir }));
     }
   );
 }
@@ -101,13 +108,14 @@ if (isToolEnabled("session_update")) {
 if (isToolEnabled("session_abort")) {
   server.tool(
     "session_abort",
-    "Abort a currently running session (stop the in-progress AI response)",
+    "Abort the current running task in a session",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiPost(`/session/${sessionId}/abort`));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiPost(`/session/${sessionId}/abort`, {}, { directory: dir }));
     }
   );
 }
@@ -115,16 +123,14 @@ if (isToolEnabled("session_abort")) {
 if (isToolEnabled("session_fork")) {
   server.tool(
     "session_fork",
-    "Fork an existing session, optionally at a specific message",
+    "Fork a session into a new one",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
-      messageID: z.string().optional().describe("Fork point message ID (defaults to latest)"),
     },
-    async ({ directory, messageID }) => {
+    async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const body = {};
-      if (messageID) body.messageID = messageID;
-      return apiResult(await apiPost(`/session/${sessionId}/fork`, body));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiPost(`/session/${sessionId}/fork`, {}, { directory: dir }));
     }
   );
 }
@@ -132,13 +138,16 @@ if (isToolEnabled("session_fork")) {
 if (isToolEnabled("session_share")) {
   server.tool(
     "session_share",
-    "Share a session publicly and get a share URL",
+    "Share a session with a note",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
+      note: z.string().optional().describe("Optional note to include with the share"),
     },
-    async ({ directory }) => {
+    async ({ directory, note }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiPost(`/session/${sessionId}/share`));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      const body = note ? { note } : {};
+      return apiResult(await apiPost(`/session/${sessionId}/share`, body, { directory: dir }));
     }
   );
 }
@@ -146,7 +155,7 @@ if (isToolEnabled("session_share")) {
 if (isToolEnabled("session_unshare")) {
   server.tool(
     "session_unshare",
-    "Unshare a previously shared session",
+    "Stop sharing a session",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
@@ -160,15 +169,16 @@ if (isToolEnabled("session_unshare")) {
 if (isToolEnabled("session_summarize")) {
   server.tool(
     "session_summarize",
-    "Summarize a session using a specified model",
+    "Summarize a session (currently no-op placeholder)",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
-      providerID: z.string().describe("The AI provider ID to use for summarization"),
-      modelID: z.string().describe("The model ID to use for summarization"),
+      providerID: z.string().optional().describe("AI provider ID"),
+      modelID: z.string().optional().describe("Model ID to use for summarization"),
     },
     async ({ directory, providerID, modelID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiPost(`/session/${sessionId}/summarize`, { providerID, modelID }));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiPost(`/session/${sessionId}/summarize`, { providerID, modelID }, { directory: dir }));
     }
   );
 }
@@ -176,15 +186,16 @@ if (isToolEnabled("session_summarize")) {
 if (isToolEnabled("session_diff")) {
   server.tool(
     "session_diff",
-    "Get the file diff for a session (what files were changed)",
+    "Get the file diff for a session",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
       messageID: z.string().optional().describe("Optional message ID to diff up to"),
     },
     async ({ directory, messageID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
       const query = messageID ? { messageID } : {};
-      return apiResult(await apiGet(`/session/${sessionId}/diff`, query));
+      return apiResult(await apiGet(`/session/${sessionId}/diff`, query, { directory: dir }));
     }
   );
 }
@@ -192,17 +203,14 @@ if (isToolEnabled("session_diff")) {
 if (isToolEnabled("session_revert")) {
   server.tool(
     "session_revert",
-    "Revert a session to a specific message (undo changes after that message)",
+    "Revert all changes made by a session",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
-      messageID: z.string().describe("The message ID to revert to"),
-      partID: z.string().optional().describe("Optional specific part ID within the message"),
     },
-    async ({ directory, messageID, partID }) => {
+    async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const body = { messageID };
-      if (partID) body.partID = partID;
-      return apiResult(await apiPost(`/session/${sessionId}/revert`, body));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiPost(`/session/${sessionId}/revert`, {}, { directory: dir }));
     }
   );
 }
@@ -210,13 +218,14 @@ if (isToolEnabled("session_revert")) {
 if (isToolEnabled("session_unrevert")) {
   server.tool(
     "session_unrevert",
-    "Restore all reverted messages in a session",
+    "Un-revert a previously reverted session",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiPost(`/session/${sessionId}/unrevert`));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiPost(`/session/${sessionId}/unrevert`, {}, { directory: dir }));
     }
   );
 }
@@ -224,13 +233,14 @@ if (isToolEnabled("session_unrevert")) {
 if (isToolEnabled("session_todo_list")) {
   server.tool(
     "session_todo_list",
-    "Get the todo/task list for a session (tasks the AI is tracking)",
+    "Get the todo/task list for a session",
     {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiGet(`/session/${sessionId}/todo`));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet(`/session/${sessionId}/todo`, {}, { directory: dir }));
     }
   );
 }
@@ -244,7 +254,8 @@ if (isToolEnabled("session_children")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiGet(`/session/${sessionId}/children`));
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet(`/session/${sessionId}/children`, {}, { directory: dir }));
     }
   );
 }
@@ -270,10 +281,11 @@ if (isToolEnabled("permission_respond")) {
     },
     async ({ directory, permissionID, response, remember }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
       const body = { response };
       if (remember !== undefined) body.remember = remember;
       return apiResult(
-        await apiPost(`/session/${sessionId}/permissions/${permissionID}`, body)
+        await apiPost(`/session/${sessionId}/permissions/${permissionID}`, body, { directory: dir })
       );
     }
   );
@@ -303,6 +315,7 @@ if (isToolEnabled("message_send")) {
     async ({ directory, text, providerID, modelID, agent, noReply }) => {
       if (directory) sessionManager.setCurrentDirectory(directory);
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
       const body = {
         parts: [{ type: "text", text }],
       };
@@ -317,7 +330,7 @@ if (isToolEnabled("message_send")) {
       if (noReply || !MSG_WAIT_IDLE) {
         body.noReply = true;
         log("debug", `Sending message (no wait): ${JSON.stringify(body).substring(0, 200)}...`);
-        const result = await apiPost(`/session/${sessionId}/message`, body);
+        const result = await apiPost(`/session/${sessionId}/message`, body, { directory: dir });
         if (!result.ok) {
           return err(`HTTP ${result.status}`, result.data);
         }
@@ -335,7 +348,7 @@ if (isToolEnabled("message_send")) {
           null,
           async () => {
             log("debug", `SSE connected, sending message: ${JSON.stringify(body).substring(0, 200)}...`);
-            const result = await apiPost(`/session/${sessionId}/message`, body);
+            const result = await apiPost(`/session/${sessionId}/message`, body, { directory: dir });
             if (!result.ok) {
               throw new Error(`HTTP ${result.status}: ${JSON.stringify(result.data)}`);
             }
@@ -370,8 +383,9 @@ if (isToolEnabled("message_list")) {
     },
     async ({ directory, limit }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
       const query = limit ? { limit } : {};
-      const result = await apiGet(`/session/${sessionId}/message`, query);
+      const result = await apiGet(`/session/${sessionId}/message`, query, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
       // Summarize for readability
       const messages = Array.isArray(result.data) ? result.data : [];
@@ -403,7 +417,8 @@ if (isToolEnabled("message_get")) {
     },
     async ({ directory, messageId }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const result = await apiGet(`/session/${sessionId}/message/${messageId}`);
+      const dir = directory || sessionManager.getCurrentDirectory();
+      const result = await apiGet(`/session/${sessionId}/message/${messageId}`, {}, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
       return ok(formatMessageResponse(result.data));
     }
@@ -423,6 +438,7 @@ if (isToolEnabled("prompt_async")) {
     },
     async ({ directory, text, providerID, modelID, agent }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
       const body = { parts: [{ type: "text", text }] };
       if (providerID || modelID) {
         body.model = {};
@@ -430,7 +446,7 @@ if (isToolEnabled("prompt_async")) {
         if (modelID) body.model.modelID = modelID;
       }
       if (agent) body.agent = agent;
-      const result = await apiPost(`/session/${sessionId}/prompt_async`, body);
+      const result = await apiPost(`/session/${sessionId}/prompt_async`, body, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
       return ok({ sent: true, sessionId, note: "Message sent asynchronously. Use message_list or subscribe to events to get the response." });
     }
@@ -450,10 +466,11 @@ if (isToolEnabled("session_command")) {
     },
     async ({ directory, command, arguments: args, agent, modelID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
       const body = { command, arguments: args || "" };
       if (agent) body.agent = agent;
       if (modelID) body.model = { modelID };
-      const result = await apiPost(`/session/${sessionId}/command`, body);
+      const result = await apiPost(`/session/${sessionId}/command`, body, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
       return ok(formatMessageResponse(result.data));
     }
@@ -472,9 +489,10 @@ if (isToolEnabled("session_shell")) {
     },
     async ({ directory, command, agent, modelID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || sessionManager.getCurrentDirectory();
       const body = { command, agent };
       if (modelID) body.model = { modelID };
-      const result = await apiPost(`/session/${sessionId}/shell`, body);
+      const result = await apiPost(`/session/${sessionId}/shell`, body, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
       return ok(formatMessageResponse(result.data));
     }
@@ -490,11 +508,13 @@ if (isToolEnabled("file_list")) {
     "file_list",
     "List files and directories in the opencode project",
     {
+      directory: z.string().optional().describe("The working directory"),
       path: z.string().optional().describe("Path to list (relative to project root, defaults to root)"),
     },
-    async ({ path }) => {
+    async ({ directory, path }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
       const query = path ? { path } : {};
-      return apiResult(await apiGet("/file", query));
+      return apiResult(await apiGet("/file", query, { directory: dir }));
     }
   );
 }
@@ -504,9 +524,13 @@ if (isToolEnabled("file_read")) {
     "file_read",
     "Read the contents of a file in the opencode project",
     {
+      directory: z.string().optional().describe("The working directory"),
       path: z.string().describe("Path to the file (relative to project root)"),
     },
-    async ({ path }) => apiResult(await apiGet("/file/content", { path }))
+    async ({ directory, path }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet("/file/content", { path }, { directory: dir }));
+    }
   );
 }
 
@@ -514,8 +538,13 @@ if (isToolEnabled("file_status")) {
   server.tool(
     "file_status",
     "Get VCS/git status for all tracked files in the project",
-    {},
-    async () => apiResult(await apiGet("/file/status"))
+    {
+      directory: z.string().optional().describe("The working directory"),
+    },
+    async ({ directory }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet("/file/status", {}, { directory: dir }));
+    }
   );
 }
 
@@ -524,9 +553,13 @@ if (isToolEnabled("find_text")) {
     "find_text",
     "Search for text/regex patterns across files in the project",
     {
+      directory: z.string().optional().describe("The working directory"),
       pattern: z.string().describe("Text or regex pattern to search for"),
     },
-    async ({ pattern }) => apiResult(await apiGet("/find", { pattern }))
+    async ({ directory, pattern }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet("/find", { pattern }, { directory: dir }));
+    }
   );
 }
 
@@ -535,17 +568,19 @@ if (isToolEnabled("find_file")) {
     "find_file",
     "Find files or directories by name (fuzzy match)",
     {
+      directory: z.string().optional().describe("The working directory"),
       query: z.string().describe("Filename search query (fuzzy match)"),
       type: z.enum(["file", "directory"]).optional().describe("Limit to files or directories only"),
       limit: z.number().min(1).max(200).optional().describe("Maximum number of results (1-200)"),
       searchPath: z.string().optional().describe("Override project root for search"),
     },
-    async ({ query, type, limit, searchPath }) => {
+    async ({ directory, query, type, limit, searchPath }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
       const params = { query };
       if (type) params.type = type;
       if (limit) params.limit = limit;
       if (searchPath) params.directory = searchPath;
-      return apiResult(await apiGet("/find/file", params));
+      return apiResult(await apiGet("/find/file", params, { directory: dir }));
     }
   );
 }
@@ -555,9 +590,13 @@ if (isToolEnabled("find_symbol")) {
     "find_symbol",
     "Find workspace symbols (functions, classes, variables) by name",
     {
+      directory: z.string().optional().describe("The working directory"),
       query: z.string().describe("Symbol name to search for"),
     },
-    async ({ query }) => apiResult(await apiGet("/find/symbol", { query }))
+    async ({ directory, query }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet("/find/symbol", { query }, { directory: dir }));
+    }
   );
 }
 
@@ -659,18 +698,28 @@ if (isToolEnabled("project_list")) {
 if (isToolEnabled("project_current")) {
   server.tool(
     "project_current",
-    "Get the current active project",
-    {},
-    async () => apiResult(await apiGet("/project/current"))
+    "Get the current active project for a directory",
+    {
+      directory: z.string().optional().describe("The working directory"),
+    },
+    async ({ directory }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet("/project/current", {}, { directory: dir }));
+    }
   );
 }
 
 if (isToolEnabled("vcs_info")) {
   server.tool(
     "vcs_info",
-    "Get VCS (git) information for the current project",
-    {},
-    async () => apiResult(await apiGet("/vcs"))
+    "Get VCS (git) information for a project",
+    {
+      directory: z.string().optional().describe("The working directory"),
+    },
+    async ({ directory }) => {
+      const dir = directory || sessionManager.getCurrentDirectory();
+      return apiResult(await apiGet("/vcs", {}, { directory: dir }));
+    }
   );
 }
 

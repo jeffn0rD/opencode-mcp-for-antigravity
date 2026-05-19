@@ -14,6 +14,10 @@ export class SessionManager {
     this.currentDirectory = resolve(dir);
   }
 
+  getCurrentDirectory() {
+    return this.currentDirectory || process.cwd();
+  }
+
   _addToCache(dir, id) {
     if (this.directoryToSession.has(dir)) {
       this.directoryToSession.delete(dir);
@@ -46,21 +50,21 @@ export class SessionManager {
     }
 
     // Check backend
-    const res = await apiGet("/session");
-    if (res.ok && Array.isArray(res.data)) {
-      const existing = res.data.find((s) => s.directory === resolvedDir);
+    const listRes = await apiGet("/session", {}, { directory: resolvedDir });
+    if (listRes.ok && Array.isArray(listRes.data)) {
+      const existing = listRes.data.find((s) => s.directory === resolvedDir);
       if (existing) {
         this._addToCache(resolvedDir, existing.id);
         return existing.id;
       }
     }
 
-    // Create new
-    const body = { directory: resolvedDir };
+    // Create new session in this directory's project context
+    const body = {};
     if (title) body.title = title;
     if (parentID) body.parentID = parentID;
     
-    const createRes = await apiPost("/session", body);
+    const createRes = await apiPost("/session", body, { directory: resolvedDir });
     if (!createRes.ok) {
       throw new Error(`Failed to create session for directory ${resolvedDir}: HTTP ${createRes.status}`);
     }

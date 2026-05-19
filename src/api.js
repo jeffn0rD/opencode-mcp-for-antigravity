@@ -14,70 +14,49 @@ function getHeaders(extra = {}) {
   return headers;
 }
 
-export async function apiGet(path, queryParams = {}, opts = {}) {
+function resolveUrl(path, queryParams = {}, opts = {}) {
   const url = new URL(BASE_URL + path);
   for (const [k, v] of Object.entries(queryParams)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
-  const res = await fetch(url.toString(), { 
+  if (opts.directory) {
+    url.searchParams.set("directory", opts.directory);
+  }
+  return url.toString();
+}
+
+async function fetchWithOpts(url, method, body, opts = {}) {
+  const fetchOpts = {
+    method,
     headers: getHeaders(),
     signal: AbortSignal.timeout(opts.timeout || DEFAULT_TIMEOUT)
-  });
+  };
+  if (body !== undefined) fetchOpts.body = JSON.stringify(body);
+  const res = await fetch(url, fetchOpts);
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = text; }
   return { ok: res.ok, status: res.status, data };
+}
+
+export async function apiGet(path, queryParams = {}, opts = {}) {
+  return fetchWithOpts(resolveUrl(path, queryParams, opts), "GET");
 }
 
 export async function apiPost(path, body = {}, opts = {}) {
-  const res = await fetch(BASE_URL + path, {
-    method: "POST",
-    headers: getHeaders(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(opts.timeout || DEFAULT_TIMEOUT)
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
+  return fetchWithOpts(resolveUrl(path, {}, opts), "POST", body);
 }
 
 export async function apiPatch(path, body = {}, opts = {}) {
-  const res = await fetch(BASE_URL + path, {
-    method: "PATCH",
-    headers: getHeaders(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(opts.timeout || DEFAULT_TIMEOUT)
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
+  return fetchWithOpts(resolveUrl(path, {}, opts), "PATCH", body);
 }
 
 export async function apiDelete(path, opts = {}) {
-  const res = await fetch(BASE_URL + path, {
-    method: "DELETE",
-    headers: getHeaders(),
-    signal: AbortSignal.timeout(opts.timeout || DEFAULT_TIMEOUT)
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
+  return fetchWithOpts(resolveUrl(path, {}, opts), "DELETE");
 }
 
 export async function apiPut(path, body = {}, opts = {}) {
-  const res = await fetch(BASE_URL + path, {
-    method: "PUT",
-    headers: getHeaders(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(opts.timeout || DEFAULT_TIMEOUT)
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
+  return fetchWithOpts(resolveUrl(path, {}, opts), "PUT", body);
 }
 
 export function ok(data) {
