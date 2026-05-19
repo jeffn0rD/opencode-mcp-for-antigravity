@@ -75,6 +75,10 @@ All configuration lives in `config.json`. You never need to touch `server.js`.
   "mcp": {
     "serverName": "opencode",    // key used in mcp_config.json
     "version": "1.0.0",
+    "transport": "stdio",        // "stdio" or "sse" (see Network Mode section)
+    "host": "127.0.0.1",         // bind address for SSE mode
+    "port": 3001,                // port for SSE mode
+    "authToken": null,           // Bearer token for SSE auth (or set MCP_AUTH_TOKEN env var)
     "selfRegistration": {
       "enabled": true,
       "configPath": "~/.gemini/antigravity/mcp_config.json"
@@ -145,6 +149,141 @@ Expose only the tools you need to keep the LLM tool list lean:
   }
 }
 ```
+
+---
+
+## Network Mode (SSE Transport)
+
+By default the MCP server communicates over **stdio** (standard input/output) — the client launches `node server.js` as a subprocess. This is the simplest setup for single-machine use.
+
+For **remote access** — sharing one MCP server across multiple machines on your local network — switch to **SSE transport**. The server runs as an HTTP server with Server-Sent Events and Bearer token auth.
+
+### Configuration
+
+Set `transport` to `"sse"` in `config.json`:
+
+```jsonc
+{
+  "mcp": {
+    "serverName": "opencode",
+    "transport": "sse",            // default is "stdio"
+    "host": "0.0.0.0",            // listen on all interfaces
+    "port": 3001,                  // MCP HTTP server port (not opencode's port)
+    "authToken": "your-secret-token",   // optional Bearer token (or use env var)
+    "selfRegistration": {
+      "enabled": false             // disable — only works with stdio transport
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `transport` | `"stdio"` | Set to `"sse"` for network mode |
+| `host` | `"127.0.0.1"` | Bind address. Use `"0.0.0.0"` to accept connections from other machines |
+| `port` | `3001` | Port the MCP HTTP server listens on |
+| `authToken` | none | Shared secret for Bearer token authentication (also accepted from `MCP_AUTH_TOKEN` env var) |
+
+### Authentication
+
+SSE mode supports optional Bearer token authentication. Set it via config or environment variable to avoid secrets in files:
+
+```bash
+MCP_AUTH_TOKEN=your-secret-token node server.js
+```
+
+The token is validated with a constant-time comparison against:
+- The `Authorization: Bearer <token>` header
+- The `?token=<token>` query parameter (for clients that don't support custom headers)
+
+Requests without a valid token receive a `401 Unauthorized` response.
+
+### Running the Server
+
+```bash
+node server.js
+```
+
+You'll see:
+
+```
+[opencode-mcp] [INFO] opencode server already running at http://127.0.0.1:4096
+[opencode-mcp] [INFO] MCP server listening for SSE connections on http://0.0.0.0:3001/sse
+```
+
+The server exposes two endpoints:
+
+| Endpoint | Direction | Description |
+|---|---|---|
+| `GET /sse` | Server → Client | Long-lived SSE stream for server events |
+| `POST /message?sessionId=...` | Client → Server | Send tool calls and responses |
+
+### Client Setup for Network Mode
+
+Instead of a `command`/`args` pair (which spawns a local process), clients connect via URL.
+
+#### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "opencode": {
+      "type": "url",
+      "url": "http://192.168.1.100:3001/sse",
+      "env": {
+        "MCP_AUTH_TOKEN": "your-secret-token"
+      }
+    }
+  }
+}
+```
+
+#### Antigravity
+
+```json
+{
+  "mcpServers": {
+    "opencode": {
+      "type": "url",
+      "url": "http://192.168.1.100:3001/sse",
+      "env": {
+        "MCP_AUTH_TOKEN": "your-secret-token"
+      }
+    }
+  }
+}
+```
+
+#### Generic MCP Client (with URL support)
+
+```json
+{
+  "mcpServers": {
+    "opencode": {
+      "type": "url",
+      "url": "http://192.168.1.100:3001/sse"
+    }
+  }
+}
+```
+
+If your client supports HTTP headers, you can also pass the auth token as a header:
+
+```
+Authorization: Bearer your-secret-token
+```
+
+### Security Notes
+
+- **Bind to `127.0.0.1`** (the default) if you only need access from the same machine — this avoids exposing the server to the network entirely.
+- **Bind to `0.0.0.0`** only when you need remote access, and **always enable auth** by setting `MCP_AUTH_TOKEN`.
+- The MCP server gives full control over opencode (file read, session management, command execution). Treat the auth token like a root password.
+- For production use, consider placing the server behind a reverse proxy (nginx, Caddy) with TLS termination so traffic is encrypted.
+- The opencode REST API (port `4096`) is distinct from the MCP HTTP server (port `3001`). The MCP server calls opencode's REST API locally. Only the MCP port needs to be exposed to clients — the opencode API should stay on `127.0.0.1`.
+
+### Known Limitation
+
+`selfRegistration` writes a `stdio`-based entry to the client config file and does not work with SSE mode. For network mode, configure the client manually as shown above.
 
 ---
 
