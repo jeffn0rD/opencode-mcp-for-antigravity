@@ -30,7 +30,7 @@ if (isToolEnabled("session_list")) {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
     async ({ directory }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet("/session", {}, { directory: dir }));
     }
   );
@@ -47,14 +47,13 @@ if (isToolEnabled("session_create")) {
     },
     async ({ directory, title, parentID }) => {
       if (directory) {
-        sessionManager.setCurrentDirectory(directory);
         const sessionId = await sessionManager.getSessionIdForDirectory(directory, title, parentID);
         return apiResult(await apiGet(`/session/${sessionId}`));
       }
       const body = {};
       if (title) body.title = title;
       if (parentID) body.parentID = parentID;
-      return apiResult(await apiPost("/session", body));
+      return apiResult(await apiPost("/session", body, { directory: process.cwd() }));
     }
   );
 }
@@ -67,9 +66,8 @@ if (isToolEnabled("session_get")) {
       directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
     async ({ directory }) => {
-      if (directory) sessionManager.setCurrentDirectory(directory);
-const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || process.cwd();
       return apiResult(await apiGet(`/session/${sessionId}`, {}, { directory: dir }));
     }
   );
@@ -84,7 +82,8 @@ if (isToolEnabled("session_delete")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiDelete(`/session/${sessionId}`));
+      const dir = directory || process.cwd();
+      return apiResult(await apiDelete(`/session/${sessionId}`, { directory: dir }));
     }
   );
 }
@@ -99,7 +98,7 @@ if (isToolEnabled("session_title")) {
     },
     async ({ directory, title }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiPatch(`/session/${sessionId}`, { title }, { directory: dir }));
     }
   );
@@ -114,7 +113,7 @@ if (isToolEnabled("session_abort")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/abort`, {}, { directory: dir }));
     }
   );
@@ -129,7 +128,7 @@ if (isToolEnabled("session_fork")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/fork`, {}, { directory: dir }));
     }
   );
@@ -145,7 +144,7 @@ if (isToolEnabled("session_share")) {
     },
     async ({ directory, note }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const body = note ? { note } : {};
       return apiResult(await apiPost(`/session/${sessionId}/share`, body, { directory: dir }));
     }
@@ -161,7 +160,8 @@ if (isToolEnabled("session_unshare")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      return apiResult(await apiDelete(`/session/${sessionId}/share`));
+      const dir = directory || process.cwd();
+      return apiResult(await apiDelete(`/session/${sessionId}/share`, { directory: dir }));
     }
   );
 }
@@ -177,7 +177,7 @@ if (isToolEnabled("session_summarize")) {
     },
     async ({ directory, providerID, modelID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/summarize`, { providerID, modelID }, { directory: dir }));
     }
   );
@@ -193,7 +193,7 @@ if (isToolEnabled("session_diff")) {
     },
     async ({ directory, messageID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const query = messageID ? { messageID } : {};
       return apiResult(await apiGet(`/session/${sessionId}/diff`, query, { directory: dir }));
     }
@@ -209,7 +209,7 @@ if (isToolEnabled("session_revert")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/revert`, {}, { directory: dir }));
     }
   );
@@ -224,7 +224,7 @@ if (isToolEnabled("session_unrevert")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiPost(`/session/${sessionId}/unrevert`, {}, { directory: dir }));
     }
   );
@@ -239,7 +239,7 @@ if (isToolEnabled("session_todo_list")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet(`/session/${sessionId}/todo`, {}, { directory: dir }));
     }
   );
@@ -254,7 +254,7 @@ if (isToolEnabled("session_children")) {
     },
     async ({ directory }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet(`/session/${sessionId}/children`, {}, { directory: dir }));
     }
   );
@@ -281,7 +281,7 @@ if (isToolEnabled("permission_respond")) {
     },
     async ({ directory, permissionID, response, remember }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const body = { response };
       if (remember !== undefined) body.remember = remember;
       return apiResult(
@@ -313,9 +313,8 @@ if (isToolEnabled("message_send")) {
       noReply: z.boolean().optional().describe("If true, send without waiting for AI reply"),
     },
     async ({ directory, text, providerID, modelID, agent, noReply }) => {
-      if (directory) sessionManager.setCurrentDirectory(directory);
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const body = {
         parts: [{ type: "text", text }],
       };
@@ -354,7 +353,8 @@ if (isToolEnabled("message_send")) {
             }
             log("debug", `Message sent, response: ${JSON.stringify(result.data).substring(0, 200)}...`);
             return result.data;
-          }
+          },
+          dir
         );
 
         log("debug", `Session ${sessionId} wait completed: ${JSON.stringify(idleResult)}`);
@@ -383,7 +383,7 @@ if (isToolEnabled("message_list")) {
     },
     async ({ directory, limit }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const query = limit ? { limit } : {};
       const result = await apiGet(`/session/${sessionId}/message`, query, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
@@ -417,7 +417,7 @@ if (isToolEnabled("message_get")) {
     },
     async ({ directory, messageId }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const result = await apiGet(`/session/${sessionId}/message/${messageId}`, {}, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
       return ok(formatMessageResponse(result.data));
@@ -438,7 +438,7 @@ if (isToolEnabled("prompt_async")) {
     },
     async ({ directory, text, providerID, modelID, agent }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const body = { parts: [{ type: "text", text }] };
       if (providerID || modelID) {
         body.model = {};
@@ -466,7 +466,7 @@ if (isToolEnabled("session_command")) {
     },
     async ({ directory, command, arguments: args, agent, modelID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const body = { command, arguments: args || "" };
       if (agent) body.agent = agent;
       if (modelID) body.model = { modelID };
@@ -489,7 +489,7 @@ if (isToolEnabled("session_shell")) {
     },
     async ({ directory, command, agent, modelID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const body = { command, agent };
       if (modelID) body.model = { modelID };
       const result = await apiPost(`/session/${sessionId}/shell`, body, { directory: dir });
@@ -512,7 +512,7 @@ if (isToolEnabled("file_list")) {
       path: z.string().optional().describe("Path to list (relative to project root, defaults to root)"),
     },
     async ({ directory, path }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const query = path ? { path } : {};
       return apiResult(await apiGet("/file", query, { directory: dir }));
     }
@@ -528,7 +528,7 @@ if (isToolEnabled("file_read")) {
       path: z.string().describe("Path to the file (relative to project root)"),
     },
     async ({ directory, path }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet("/file/content", { path }, { directory: dir }));
     }
   );
@@ -542,7 +542,7 @@ if (isToolEnabled("file_status")) {
       directory: z.string().optional().describe("The working directory"),
     },
     async ({ directory }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet("/file/status", {}, { directory: dir }));
     }
   );
@@ -557,7 +557,7 @@ if (isToolEnabled("find_text")) {
       pattern: z.string().describe("Text or regex pattern to search for"),
     },
     async ({ directory, pattern }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet("/find", { pattern }, { directory: dir }));
     }
   );
@@ -575,7 +575,7 @@ if (isToolEnabled("find_file")) {
       searchPath: z.string().optional().describe("Override project root for search"),
     },
     async ({ directory, query, type, limit, searchPath }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       const params = { query };
       if (type) params.type = type;
       if (limit) params.limit = limit;
@@ -594,7 +594,7 @@ if (isToolEnabled("find_symbol")) {
       query: z.string().describe("Symbol name to search for"),
     },
     async ({ directory, query }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet("/find/symbol", { query }, { directory: dir }));
     }
   );
@@ -703,7 +703,7 @@ if (isToolEnabled("project_current")) {
       directory: z.string().optional().describe("The working directory"),
     },
     async ({ directory }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet("/project/current", {}, { directory: dir }));
     }
   );
@@ -717,7 +717,7 @@ if (isToolEnabled("vcs_info")) {
       directory: z.string().optional().describe("The working directory"),
     },
     async ({ directory }) => {
-      const dir = directory || sessionManager.getCurrentDirectory();
+      const dir = directory || process.cwd();
       return apiResult(await apiGet("/vcs", {}, { directory: dir }));
     }
   );
@@ -825,9 +825,10 @@ if (isToolEnabled("session_init")) {
     },
     async ({ directory, providerID, modelID, messageID }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || process.cwd();
       const body = { providerID, modelID };
       if (messageID) body.messageID = messageID;
-      return apiResult(await apiPost(`/session/${sessionId}/init`, body));
+      return apiResult(await apiPost(`/session/${sessionId}/init`, body, { directory: dir }));
     }
   );
 }
@@ -851,12 +852,13 @@ if (isToolEnabled("session_poll_status")) {
     },
     async ({ directory, timeoutMs = 120000, pollIntervalMs = 800 }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || process.cwd();
       const deadline = Date.now() + timeoutMs;
       let attempts = 0;
 
       while (Date.now() < deadline) {
         attempts++;
-        const result = await apiGet("/session/status");
+        const result = await apiGet("/session/status", {}, { directory: dir });
         if (!result.ok) return err(`HTTP ${result.status}`, result.data);
 
         const sessionStatus = result.data?.[sessionId];
@@ -902,7 +904,8 @@ if (isToolEnabled("session_get_response")) {
     },
     async ({ directory, limit = 10 }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
-      const result = await apiGet(`/session/${sessionId}/message`, { limit });
+      const dir = directory || process.cwd();
+      const result = await apiGet(`/session/${sessionId}/message`, { limit }, { directory: dir });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
 
       const messages = Array.isArray(result.data) ? result.data : [];
@@ -942,6 +945,7 @@ if (isToolEnabled("prompt_and_wait")) {
     },
     async ({ directory, text, providerID, modelID, agent, timeoutMs = 300000, pollIntervalMs = 800 }) => {
       const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      const dir = directory || process.cwd();
       // Step 1: Send asynchronously
       const body = { parts: [{ type: "text", text }] };
       if (providerID || modelID) {
@@ -951,7 +955,7 @@ if (isToolEnabled("prompt_and_wait")) {
       }
       if (agent) body.agent = agent;
 
-      const sendResult = await apiPost(`/session/${sessionId}/prompt_async`, body);
+      const sendResult = await apiPost(`/session/${sessionId}/prompt_async`, body, { directory: dir });
       if (!sendResult.ok) return err(`Failed to send prompt: HTTP ${sendResult.status}`, sendResult.data);
 
       // Step 2: Poll until idle
@@ -960,7 +964,7 @@ if (isToolEnabled("prompt_and_wait")) {
 
       while (Date.now() < deadline) {
         attempts++;
-        const statusRes = await apiGet(`/session/status`);
+        const statusRes = await apiGet(`/session/status`, {}, { directory: dir });
         if (!statusRes.ok) {
           return err(`Failed to poll status: HTTP ${statusRes.status}`, statusRes.data);
         }
@@ -989,7 +993,7 @@ if (isToolEnabled("prompt_and_wait")) {
       }
 
       // Step 3: Fetch response
-      const msgResult = await apiGet(`/session/${sessionId}/message`, { limit: 10 });
+      const msgResult = await apiGet(`/session/${sessionId}/message`, { limit: 10 }, { directory: dir });
       if (!msgResult.ok) return err(`Prompt sent and completed, but failed to fetch response: HTTP ${msgResult.status}`, msgResult.data);
 
       const messages = Array.isArray(msgResult.data) ? msgResult.data : [];

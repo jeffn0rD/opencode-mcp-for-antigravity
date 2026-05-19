@@ -7,15 +7,6 @@ export class SessionManager {
     this.directoryToSession = new Map();
     this.inflightRequests = new Map();
     this.maxCacheSize = 100;
-    this.currentDirectory = null;
-  }
-
-  setCurrentDirectory(dir) {
-    this.currentDirectory = resolve(dir);
-  }
-
-  getCurrentDirectory() {
-    return this.currentDirectory || process.cwd();
   }
 
   _addToCache(dir, id) {
@@ -30,13 +21,13 @@ export class SessionManager {
   }
 
   async _doGetSessionIdForDirectory(directory, title, parentID) {
-    const resolvedDir = resolve(directory || this.currentDirectory || process.cwd());
+    const resolvedDir = resolve(directory || process.cwd());
     
     // Check cache
     if (this.directoryToSession.has(resolvedDir)) {
       const cachedId = this.directoryToSession.get(resolvedDir);
       // Verify it still exists
-      const res = await apiGet(`/session/${cachedId}`);
+      const res = await apiGet(`/session/${cachedId}`, {}, { directory: resolvedDir });
       if (res.ok) {
         this._addToCache(resolvedDir, cachedId); // Update LRU
         return cachedId;
@@ -79,7 +70,7 @@ export class SessionManager {
   }
 
   async getSessionIdForDirectory(directory, title = null, parentID = null) {
-    const resolvedDir = resolve(directory || this.currentDirectory || process.cwd());
+    const resolvedDir = resolve(directory || process.cwd());
     const cacheKey = `${resolvedDir}|${title || ''}`;
     
     if (this.inflightRequests.has(cacheKey)) {

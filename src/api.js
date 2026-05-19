@@ -19,7 +19,7 @@ function resolveUrl(path, queryParams = {}, opts = {}) {
   for (const [k, v] of Object.entries(queryParams)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
-  if (opts.directory) {
+  if (opts.directory && !url.searchParams.has("directory")) {
     url.searchParams.set("directory", opts.directory);
   }
   return url.toString();
@@ -108,10 +108,10 @@ export function formatMessageResponse(msgResponse) {
   };
 }
 
-export async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null, onConnected = null) {
+export async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null, onConnected = null, directory = null) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + maxWaitMs;
-    const url = `${BASE_URL}/event`;
+    const url = directory ? `${BASE_URL}/event?directory=${encodeURIComponent(directory)}` : `${BASE_URL}/event`;
     const headers = getHeaders({ Accept: "text/event-stream" });
 
     let buffer = "";
