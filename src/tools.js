@@ -1,446 +1,10 @@
-#!/usr/bin/env node
-/**
- * opencode-mcp — MCP server wrapper for the opencode REST API
- * Auto-launches `opencode serve` if not already running.
- * Self-registers into ~/.gemini/antigravity/mcp_config.json
- */
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { spawn } from "child_process";
-import { resolve, dirname } from "path";
-import { homedir } from "os";
-import { fileURLToPath } from "url";
+import { isToolEnabled, config, MSG_WAIT_IDLE, MSG_MAX_WAIT } from "./config.js";
+import { apiGet, apiPost, apiPatch, apiDelete, apiPut, apiResult, err, ok, formatMessageResponse, waitForSessionIdle } from "./api.js";
+import { sessionManager } from "./session.js";
+import { log, sleep } from "./logger.js";
 
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const config = JSON.parse(readFileSync(resolve(__dirname, "config.json"), "utf-8"));
-
-const HOST = config.server.host;
-const PORT = config.server.port;
-const BASE_URL = `http://${HOST}:${PORT}`;
-const STARTUP_TIMEOUT = config.server.startupTimeoutMs;
-const POLL_INTERVAL = config.server.pollIntervalMs;
-const MSG_WAIT_IDLE = config.messages.waitForIdle;
-const MSG_MAX_WAIT = config.messages.maxWaitMs;
-const TOOL_EXCLUDE = new Set((config.tools.exclude || []).map((p) => p.replace("*", "")));
-
-// ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-function getHeaders(extra = {}) {
-  const headers = { "Content-Type": "application/json", ...extra };
-  const password = process.env[config.server.auth.passwordEnvVar];
-  if (password) {
-    const username =
-      process.env[config.server.auth.usernameEnvVar] ||
-      config.server.auth.defaultUsername;
-    const encoded = Buffer.from(`${username}:${password}`).toString("base64");
-    headers["Authorization"] = `Basic ${encoded}`;
-  }
-  return headers;
-}
-
-// ---------------------------------------------------------------------------
-// HTTP helpers
-// ---------------------------------------------------------------------------
-
-async function apiGet(path, queryParams = {}) {
-  const url = new URL(BASE_URL + path);
-  for (const [k, v] of Object.entries(queryParams)) {
-    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
-  }
-  const res = await fetch(url.toString(), { headers: getHeaders() });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
-}
-
-async function apiPost(path, body = {}) {
-  const res = await fetch(BASE_URL + path, {
-    method: "POST",
-    headers: getHeaders(),
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
-}
-
-async function apiPatch(path, body = {}) {
-  const res = await fetch(BASE_URL + path, {
-    method: "PATCH",
-    headers: getHeaders(),
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
-}
-
-async function apiDelete(path) {
-  const res = await fetch(BASE_URL + path, {
-    method: "DELETE",
-    headers: getHeaders(),
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
-}
-
-async function apiPut(path, body = {}) {
-  const res = await fetch(BASE_URL + path, {
-    method: "PUT",
-    headers: getHeaders(),
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
-}
-
-// ---------------------------------------------------------------------------
-// Response formatter
-// ---------------------------------------------------------------------------
-
-function ok(data) {
-  return {
-    content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-    isError: false,
-  };
-}
-
-function err(message, data = null) {
-  const text = data ? `${message}\n\n${JSON.stringify(data, null, 2)}` : message;
-  return {
-    content: [{ type: "text", text }],
-    isError: true,
-  };
-}
-
-function apiResult(result, transform = null) {
-  if (!result.ok) return err(`HTTP ${result.status}`, result.data);
-  const data = transform ? transform(result.data) : result.data;
-  return ok(data);
-}
-
-/** Extract readable text from a message response {info, parts[]} */
-function formatMessageResponse(msgResponse) {
-  if (!msgResponse || !msgResponse.parts) return msgResponse;
-  const textParts = msgResponse.parts
-    .filter((p) => p.type === "text" && !p.synthetic && !p.ignored)
-    .map((p) => p.text)
-    .join("\n");
-  const toolSummary = msgResponse.parts
-    .filter((p) => p.type === "tool")
-    .map((p) => {
-      const status = p.state?.status || "unknown";
-      const title = p.state?.title || p.tool || "";
-      return `[tool:${p.tool}] ${title} (${status})`;
-    })
-    .join("\n");
-  return {
-    messageId: msgResponse.info?.id,
-    sessionId: msgResponse.info?.sessionID,
-    role: msgResponse.info?.role,
-    model: msgResponse.info?.modelID,
-    provider: msgResponse.info?.providerID,
-    cost: msgResponse.info?.cost,
-    tokens: msgResponse.info?.tokens,
-    error: msgResponse.info?.error,
-    response: textParts || "(no text output)",
-    toolsUsed: toolSummary || null,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tool name filter
-// ---------------------------------------------------------------------------
-
-function isToolEnabled(name) {
-  if (config.tools.include[0] === "*") {
-    // Check exclude list (supports prefix wildcards like "tui_*")
-    for (const excl of TOOL_EXCLUDE) {
-      if (name.startsWith(excl)) return false;
-    }
-    return true;
-  }
-  return config.tools.include.includes(name);
-}
-
-// ---------------------------------------------------------------------------
-// SSE: wait for session idle
-// ---------------------------------------------------------------------------
-
-async function waitForSessionIdle(sessionId, maxWaitMs, onEvent = null) {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + maxWaitMs;
-    const url = `${BASE_URL}/event`;
-    const headers = getHeaders({ Accept: "text/event-stream" });
-
-    let buffer = "";
-    let resolved = false;
-    let lastEventTime = Date.now();
-
-    function finish(result) {
-      if (resolved) return;
-      resolved = true;
-      resolve(result);
-    }
-
-    function abort(reason) {
-      if (resolved) return;
-      resolved = true;
-      reject(reason);
-    }
-
-    async function connect() {
-      try {
-        log("debug", `Connecting to SSE stream for session ${sessionId}...`);
-        const res = await fetch(url, { headers, signal: AbortSignal.timeout(maxWaitMs + 5000) });
-        if (!res.ok) {
-          abort(new Error(`SSE connection failed: HTTP ${res.status}`));
-          return;
-        }
-
-        log("debug", `SSE connection established for session ${sessionId}`);
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (!resolved) {
-          if (Date.now() > deadline) {
-            abort(new Error(`Timed out waiting for session ${sessionId} to become idle (last event ${Date.now() - lastEventTime}ms ago)`));
-            return;
-          }
-
-          const { done, value } = await reader.read();
-          if (done) { 
-            log("debug", `SSE stream ended for session ${sessionId}`);
-            finish({ timedOut: false, reason: "stream_ended" }); 
-            return; 
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop(); // keep incomplete last line
-
-          for (const line of lines) {
-            if (!line.startsWith("data:")) continue;
-            const raw = line.slice(5).trim();
-            if (!raw) continue;
-            try {
-              const envelope = JSON.parse(raw);
-              log("debug", `Received SSE event: ${JSON.stringify(envelope).substring(0, 200)}`);
-              
-              // Global event envelope: { directory, payload: { type, properties } }
-              const event = envelope.payload || envelope;
-              if (onEvent) onEvent(event);
-
-              const t = event.type;
-              const props = event.properties || {};
-
-              // More flexible matching for session idle events
-              const isMatchingSession = 
-                props.sessionID === sessionId || 
-                props.session_id === sessionId ||
-                props.sessionId === sessionId;
-
-              if (
-                (t === "session.idle" && isMatchingSession) ||
-                (t === "session.status" &&
-                  isMatchingSession &&
-                  (props.status?.type === "idle" || props.status === "idle")) ||
-                (t === "message.complete" && isMatchingSession)
-              ) {
-                log("debug", `Session ${sessionId} became idle (event type: ${t})`);
-                finish({ timedOut: false, reason: "idle" });
-                return;
-              }
-
-              if (t === "session.error" && (isMatchingSession || !props.sessionID)) {
-                log("warn", `Session error for ${sessionId}: ${props.error}`);
-                finish({ timedOut: false, reason: "error", error: props.error });
-                return;
-              }
-
-              lastEventTime = Date.now();
-            } catch (e) {
-              log("debug", `Failed to parse SSE event: ${e.message}`);
-              // ignore parse errors on individual events
-            }
-          }
-        }
-      } catch (e) {
-        if (!resolved) abort(e);
-      }
-    }
-
-    connect();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Server auto-launch
-// ---------------------------------------------------------------------------
-
-async function checkHealth() {
-  try {
-    const res = await fetch(`${BASE_URL}/global/health`, {
-      headers: getHeaders(),
-      signal: AbortSignal.timeout(2000),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function launchOpencode() {
-  const { launchCommand, launchArgs } = config.server;
-  log("info", `Launching: ${launchCommand} ${launchArgs.join(" ")}`);
-
-  await new Promise((resolve, reject) => {
-    const child = spawn(launchCommand, launchArgs, {
-      detached: true,
-      stdio: "ignore",
-    });
-
-    // Catch immediate spawn errors (e.g. command not found)
-    child.on("error", (e) => {
-      if (e.code === "ENOENT") {
-        reject(new Error(
-          `Cannot launch opencode: '${launchCommand}' not found in PATH. ` +
-          `Install opencode first: https://opencode.ai/docs/installation`
-        ));
-      } else {
-        reject(new Error(`Failed to spawn opencode: ${e.message}`));
-      }
-    });
-
-    // Give the process a moment to fail fast (e.g. ENOENT fires on next tick)
-    setTimeout(() => {
-      child.unref();
-      resolve();
-    }, 300);
-  });
-
-  // Poll until healthy
-  const deadline = Date.now() + STARTUP_TIMEOUT;
-  while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL);
-    if (await checkHealth()) {
-      log("info", `opencode server is up on ${BASE_URL}`);
-      return;
-    }
-  }
-  throw new Error(
-    `opencode server did not become healthy within ${STARTUP_TIMEOUT}ms. ` +
-    `Check that '${launchCommand}' is installed and in PATH.`
-  );
-}
-
-async function ensureServerRunning() {
-  if (await checkHealth()) {
-    log("info", `opencode server already running at ${BASE_URL}`);
-    return;
-  }
-  log("info", `opencode server not detected at ${BASE_URL} — launching...`);
-  await launchOpencode();
-}
-
-// ---------------------------------------------------------------------------
-// Self-registration into ~/.gemini/antigravity/mcp_config.json
-// ---------------------------------------------------------------------------
-
-function expandHome(p) {
-  if (p.startsWith("~/")) return resolve(homedir(), p.slice(2));
-  return p;
-}
-
-function selfRegister() {
-  if (!config.mcp.selfRegistration?.enabled) return;
-
-  const configPath = expandHome(config.mcp.selfRegistration.configPath);
-  const serverName = config.mcp.serverName;
-  const serverEntry = {
-    command: "node",
-    args: [resolve(__filename)],
-    env: {},
-  };
-
-  // Add env hints if auth env vars are set
-  if (process.env[config.server.auth.passwordEnvVar]) {
-    serverEntry.env[config.server.auth.passwordEnvVar] =
-      process.env[config.server.auth.passwordEnvVar];
-  }
-
-  // Read existing config or start fresh
-  let mcpConfig = { mcpServers: {} };
-  if (existsSync(configPath)) {
-    try {
-      mcpConfig = JSON.parse(readFileSync(configPath, "utf-8"));
-      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-    } catch (e) {
-      log("warn", `Could not parse ${configPath}: ${e.message} — will overwrite`);
-    }
-  }
-
-  // Check if already registered with the same command
-  const existing = mcpConfig.mcpServers[serverName];
-  if (
-    existing &&
-    existing.command === serverEntry.command &&
-    JSON.stringify(existing.args) === JSON.stringify(serverEntry.args)
-  ) {
-    log("info", `Already registered in ${configPath} as '${serverName}'`);
-    return;
-  }
-
-  // Write registration
-  mcpConfig.mcpServers[serverName] = serverEntry;
-  try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
-    log("info", `Registered '${serverName}' in ${configPath}`);
-  } catch (e) {
-    log("warn", `Could not write ${configPath}: ${e.message}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Logging (stderr so it doesn't interfere with MCP stdio transport)
-// ---------------------------------------------------------------------------
-
-function log(level, message) {
-  process.stderr.write(`[opencode-mcp] [${level.toUpperCase()}] ${message}\n`);
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// ---------------------------------------------------------------------------
-// MCP Server
-// ---------------------------------------------------------------------------
-
-const server = new McpServer({
-  name: config.mcp.serverName,
-  version: config.mcp.version,
-});
-
+export function registerTools(server) {
 // ---------------------------------------------------------------------------
 // TOOL: health_check
 // ---------------------------------------------------------------------------
@@ -472,10 +36,15 @@ if (isToolEnabled("session_create")) {
     "session_create",
     "Create a new opencode session",
     {
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       title: z.string().optional().describe("Optional title for the session"),
       parentID: z.string().optional().describe("Optional parent session ID to create a child session"),
     },
-    async ({ title, parentID }) => {
+    async ({ directory, title, parentID }) => {
+      if (directory) {
+        const sessionId = await sessionManager.getSessionIdForDirectory(directory, title, parentID);
+        return apiResult(await apiGet(`/session/${sessionId}`));
+      }
       const body = {};
       if (title) body.title = title;
       if (parentID) body.parentID = parentID;
@@ -489,9 +58,12 @@ if (isToolEnabled("session_get")) {
     "session_get",
     "Get details of a specific session by ID",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiGet(`/session/${sessionId}`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiGet(`/session/${sessionId}`));
+    }
   );
 }
 
@@ -500,9 +72,12 @@ if (isToolEnabled("session_delete")) {
     "session_delete",
     "Delete a session and all its data",
     {
-      sessionId: z.string().describe("The session ID to delete"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiDelete(`/session/${sessionId}`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiDelete(`/session/${sessionId}`));
+    }
   );
 }
 
@@ -511,11 +86,13 @@ if (isToolEnabled("session_update")) {
     "session_update",
     "Update session properties (e.g. rename it)",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       title: z.string().describe("New title for the session"),
     },
-    async ({ sessionId, title }) =>
-      apiResult(await apiPatch(`/session/${sessionId}`, { title }))
+    async ({ directory, title }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiPatch(`/session/${sessionId}`, { title }));
+    }
   );
 }
 
@@ -524,9 +101,12 @@ if (isToolEnabled("session_abort")) {
     "session_abort",
     "Abort a currently running session (stop the in-progress AI response)",
     {
-      sessionId: z.string().describe("The session ID to abort"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiPost(`/session/${sessionId}/abort`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiPost(`/session/${sessionId}/abort`));
+    }
   );
 }
 
@@ -535,10 +115,11 @@ if (isToolEnabled("session_fork")) {
     "session_fork",
     "Fork an existing session, optionally at a specific message",
     {
-      sessionId: z.string().describe("The session ID to fork"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       messageID: z.string().optional().describe("Fork point message ID (defaults to latest)"),
     },
-    async ({ sessionId, messageID }) => {
+    async ({ directory, messageID }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = {};
       if (messageID) body.messageID = messageID;
       return apiResult(await apiPost(`/session/${sessionId}/fork`, body));
@@ -551,9 +132,12 @@ if (isToolEnabled("session_share")) {
     "session_share",
     "Share a session publicly and get a share URL",
     {
-      sessionId: z.string().describe("The session ID to share"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiPost(`/session/${sessionId}/share`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiPost(`/session/${sessionId}/share`));
+    }
   );
 }
 
@@ -562,9 +146,12 @@ if (isToolEnabled("session_unshare")) {
     "session_unshare",
     "Unshare a previously shared session",
     {
-      sessionId: z.string().describe("The session ID to unshare"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiDelete(`/session/${sessionId}/share`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiDelete(`/session/${sessionId}/share`));
+    }
   );
 }
 
@@ -573,12 +160,14 @@ if (isToolEnabled("session_summarize")) {
     "session_summarize",
     "Summarize a session using a specified model",
     {
-      sessionId: z.string().describe("The session ID to summarize"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       providerID: z.string().describe("The AI provider ID to use for summarization"),
       modelID: z.string().describe("The model ID to use for summarization"),
     },
-    async ({ sessionId, providerID, modelID }) =>
-      apiResult(await apiPost(`/session/${sessionId}/summarize`, { providerID, modelID }))
+    async ({ directory, providerID, modelID }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiPost(`/session/${sessionId}/summarize`, { providerID, modelID }));
+    }
   );
 }
 
@@ -587,10 +176,11 @@ if (isToolEnabled("session_diff")) {
     "session_diff",
     "Get the file diff for a session (what files were changed)",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       messageID: z.string().optional().describe("Optional message ID to diff up to"),
     },
-    async ({ sessionId, messageID }) => {
+    async ({ directory, messageID }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const query = messageID ? { messageID } : {};
       return apiResult(await apiGet(`/session/${sessionId}/diff`, query));
     }
@@ -602,11 +192,12 @@ if (isToolEnabled("session_revert")) {
     "session_revert",
     "Revert a session to a specific message (undo changes after that message)",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       messageID: z.string().describe("The message ID to revert to"),
       partID: z.string().optional().describe("Optional specific part ID within the message"),
     },
-    async ({ sessionId, messageID, partID }) => {
+    async ({ directory, messageID, partID }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = { messageID };
       if (partID) body.partID = partID;
       return apiResult(await apiPost(`/session/${sessionId}/revert`, body));
@@ -619,9 +210,12 @@ if (isToolEnabled("session_unrevert")) {
     "session_unrevert",
     "Restore all reverted messages in a session",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiPost(`/session/${sessionId}/unrevert`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiPost(`/session/${sessionId}/unrevert`));
+    }
   );
 }
 
@@ -630,9 +224,12 @@ if (isToolEnabled("session_todo_list")) {
     "session_todo_list",
     "Get the todo/task list for a session (tasks the AI is tracking)",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiGet(`/session/${sessionId}/todo`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiGet(`/session/${sessionId}/todo`));
+    }
   );
 }
 
@@ -641,9 +238,12 @@ if (isToolEnabled("session_children")) {
     "session_children",
     "Get child sessions of a session",
     {
-      sessionId: z.string().describe("The parent session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
     },
-    async ({ sessionId }) => apiResult(await apiGet(`/session/${sessionId}/children`))
+    async ({ directory }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
+      return apiResult(await apiGet(`/session/${sessionId}/children`));
+    }
   );
 }
 
@@ -661,12 +261,13 @@ if (isToolEnabled("permission_respond")) {
     "permission_respond",
     "Respond to a permission request from opencode (e.g. allow/deny a file edit or bash command)",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       permissionID: z.string().describe("The permission request ID"),
       response: z.string().describe("The response: 'allow', 'deny', or 'always'"),
       remember: z.boolean().optional().describe("Whether to remember this decision"),
     },
-    async ({ sessionId, permissionID, response, remember }) => {
+    async ({ directory, permissionID, response, remember }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = { response };
       if (remember !== undefined) body.remember = remember;
       return apiResult(
@@ -690,16 +291,15 @@ if (isToolEnabled("message_send")) {
       "Returns the assistant's text response plus a summary of any tools it used.",
     ].join(" "),
     {
-      sessionId: z.string().describe("The session ID to send the message to"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       text: z.string().describe("The message/prompt text to send"),
       providerID: z.string().optional().describe("AI provider ID (e.g. 'anthropic', 'openai')"),
       modelID: z.string().optional().describe("Model ID (e.g. 'claude-opus-4-5', 'gpt-4o')"),
       agent: z.string().optional().describe("Agent name to use for this message"),
       noReply: z.boolean().optional().describe("If true, send without waiting for AI reply"),
     },
-    async ({ sessionId, text, providerID, modelID, agent, noReply }) => {
-      log("debug", `message_send called for session ${sessionId}: ${text.substring(0, 100)}...`);
-      
+    async ({ directory, text, providerID, modelID, agent, noReply }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = {
         parts: [{ type: "text", text }],
       };
@@ -756,10 +356,11 @@ if (isToolEnabled("message_list")) {
     "message_list",
     "List all messages in a session",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       limit: z.number().optional().describe("Maximum number of messages to return"),
     },
-    async ({ sessionId, limit }) => {
+    async ({ directory, limit }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const query = limit ? { limit } : {};
       const result = await apiGet(`/session/${sessionId}/message`, query);
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
@@ -788,10 +389,11 @@ if (isToolEnabled("message_get")) {
     "message_get",
     "Get full details of a specific message including all parts",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       messageId: z.string().describe("The message ID"),
     },
-    async ({ sessionId, messageId }) => {
+    async ({ directory, messageId }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const result = await apiGet(`/session/${sessionId}/message/${messageId}`);
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
       return ok(formatMessageResponse(result.data));
@@ -804,13 +406,14 @@ if (isToolEnabled("prompt_async")) {
     "prompt_async",
     "Send a message asynchronously — returns immediately without waiting for the AI response (fire and forget)",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       text: z.string().describe("The prompt text to send"),
       providerID: z.string().optional().describe("AI provider ID"),
       modelID: z.string().optional().describe("Model ID"),
       agent: z.string().optional().describe("Agent name"),
     },
-    async ({ sessionId, text, providerID, modelID, agent }) => {
+    async ({ directory, text, providerID, modelID, agent }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = { parts: [{ type: "text", text }] };
       if (providerID || modelID) {
         body.model = {};
@@ -830,13 +433,14 @@ if (isToolEnabled("session_command")) {
     "session_command",
     "Execute a slash command in a session (e.g. /compact, /clear)",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       command: z.string().describe("The slash command name (without the slash, e.g. 'compact')"),
       arguments: z.string().optional().describe("Arguments to pass to the command"),
       agent: z.string().optional().describe("Agent to use"),
       modelID: z.string().optional().describe("Model ID to use"),
     },
-    async ({ sessionId, command, arguments: args, agent, modelID }) => {
+    async ({ directory, command, arguments: args, agent, modelID }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = { command, arguments: args || "" };
       if (agent) body.agent = agent;
       if (modelID) body.model = { modelID };
@@ -852,12 +456,13 @@ if (isToolEnabled("session_shell")) {
     "session_shell",
     "Run a shell command within an opencode session context",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       command: z.string().describe("The shell command to run"),
       agent: z.string().describe("Agent to use for this shell command"),
       modelID: z.string().optional().describe("Model ID to use"),
     },
-    async ({ sessionId, command, agent, modelID }) => {
+    async ({ directory, command, agent, modelID }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = { command, agent };
       if (modelID) body.model = { modelID };
       const result = await apiPost(`/session/${sessionId}/shell`, body);
@@ -924,13 +529,13 @@ if (isToolEnabled("find_file")) {
       query: z.string().describe("Filename search query (fuzzy match)"),
       type: z.enum(["file", "directory"]).optional().describe("Limit to files or directories only"),
       limit: z.number().min(1).max(200).optional().describe("Maximum number of results (1-200)"),
-      directory: z.string().optional().describe("Override project root for search"),
+      searchPath: z.string().optional().describe("Override project root for search"),
     },
-    async ({ query, type, limit, directory }) => {
+    async ({ query, type, limit, searchPath }) => {
       const params = { query };
       if (type) params.type = type;
       if (limit) params.limit = limit;
-      if (directory) params.directory = directory;
+      if (searchPath) params.directory = searchPath;
       return apiResult(await apiGet("/find/file", params));
     }
   );
@@ -1155,12 +760,13 @@ if (isToolEnabled("session_init")) {
     "session_init",
     "Analyze the app in a session and create AGENTS.md",
     {
-      sessionId: z.string().describe("The session ID"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       providerID: z.string().describe("AI provider ID to use for analysis"),
       modelID: z.string().describe("Model ID to use for analysis"),
       messageID: z.string().optional().describe("Optional message ID"),
     },
-    async ({ sessionId, providerID, modelID, messageID }) => {
+    async ({ directory, providerID, modelID, messageID }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const body = { providerID, modelID };
       if (messageID) body.messageID = messageID;
       return apiResult(await apiPost(`/session/${sessionId}/init`, body));
@@ -1181,11 +787,12 @@ if (isToolEnabled("session_poll_status")) {
       "Returns immediately if the session is already idle.",
     ].join(" "),
     {
-      sessionId: z.string().describe("The session ID to poll"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       timeoutMs: z.number().optional().describe("Max time to wait in milliseconds (default: 120000 = 2 minutes)"),
       pollIntervalMs: z.number().optional().describe("How often to check status in milliseconds (default: 800)"),
     },
-    async ({ sessionId, timeoutMs = 120000, pollIntervalMs = 800 }) => {
+    async ({ directory, timeoutMs = 120000, pollIntervalMs = 800 }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const deadline = Date.now() + timeoutMs;
       let attempts = 0;
 
@@ -1232,10 +839,11 @@ if (isToolEnabled("session_get_response")) {
       "Returns the most recent assistant message text, tool usage summary, cost, and token counts.",
     ].join(" "),
     {
-      sessionId: z.string().describe("The session ID to fetch the response from"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       limit: z.number().optional().describe("Number of recent messages to fetch (default: 10, increase if needed)"),
     },
-    async ({ sessionId, limit = 10 }) => {
+    async ({ directory, limit = 10 }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       const result = await apiGet(`/session/${sessionId}/message`, { limit });
       if (!result.ok) return err(`HTTP ${result.status}`, result.data);
 
@@ -1266,7 +874,7 @@ if (isToolEnabled("prompt_and_wait")) {
       "Returns the full assistant response text once complete.",
     ].join(" "),
     {
-      sessionId: z.string().describe("The session ID to send the message to"),
+      directory: z.string().optional().describe("The working directory (maps to a session)"),
       text: z.string().describe("The prompt text to send"),
       providerID: z.string().optional().describe("AI provider ID (e.g. 'anthropic', 'openai')"),
       modelID: z.string().optional().describe("Model ID (e.g. 'claude-opus-4-5', 'gpt-4o')"),
@@ -1274,7 +882,8 @@ if (isToolEnabled("prompt_and_wait")) {
       timeoutMs: z.number().optional().describe("Max wait time in milliseconds (default: 300000 = 5 minutes)"),
       pollIntervalMs: z.number().optional().describe("Polling interval in milliseconds (default: 800)"),
     },
-    async ({ sessionId, text, providerID, modelID, agent, timeoutMs = 300000, pollIntervalMs = 800 }) => {
+    async ({ directory, text, providerID, modelID, agent, timeoutMs = 300000, pollIntervalMs = 800 }) => {
+      const sessionId = await sessionManager.getSessionIdForDirectory(directory);
       // Step 1: Send asynchronously
       const body = { parts: [{ type: "text", text }] };
       if (providerID || modelID) {
@@ -1293,17 +902,25 @@ if (isToolEnabled("prompt_and_wait")) {
 
       while (Date.now() < deadline) {
         attempts++;
-        await sleep(pollIntervalMs);
-
-        const statusResult = await apiGet("/session/status");
-        if (!statusResult.ok) continue; // don't fail on transient status errors
-
-        const sessionStatus = statusResult.data?.[sessionId];
-        if (sessionStatus?.type === "idle") break;
-
-        if (sessionStatus?.type === "retry") {
-          log("info", `Session ${sessionId} retrying: ${sessionStatus.message}`);
+        const statusRes = await apiGet(`/session/status`);
+        if (!statusRes.ok) {
+          return err(`Failed to poll status: HTTP ${statusRes.status}`, statusRes.data);
         }
+
+        const s = statusRes.data?.[sessionId];
+        if (!s) {
+          return err(`Session '${sessionId}' not found in status check`, statusRes.data);
+        }
+
+        if (s.status?.type === "idle") {
+          break; // Exit loop to fetch response
+        }
+
+        if (s.status?.type === "error") {
+          return err("Session error", s.status.error || s.status);
+        }
+
+        await sleep(pollIntervalMs);
       }
 
       if (Date.now() >= deadline) {
@@ -1543,25 +1160,5 @@ server.resource(
   }
 );
 
-// ---------------------------------------------------------------------------
-// Startup
-// ---------------------------------------------------------------------------
 
-async function main() {
-  // 1. Self-register into antigravity MCP config
-  selfRegister();
-
-  // 2. Ensure opencode server is running
-  await ensureServerRunning();
-
-  // 3. Connect MCP transport (stdio)
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  log("info", "MCP server connected and ready");
 }
-
-main().catch((e) => {
-  process.stderr.write(`[opencode-mcp] FATAL: ${e.message}\n`);
-  process.exit(1);
-});

@@ -3,15 +3,16 @@
   "version": "1.0.0",
   "description": "MCP server wrapper for the opencode REST API",
   "type": "module",
-  "main": "server.js",
+  "main": "src/index.js",
   "bin": {
-    "opencode-mcp": "./server.js"
+    "opencode-mcp": "./src/index.js"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^5.2.1",
     "zod": "^3.23.8"
   },
   "engines": {
