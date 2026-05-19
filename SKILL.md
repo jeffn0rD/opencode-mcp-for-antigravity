@@ -127,6 +127,31 @@ prompt_and_wait(
 
 ---
 
+## Agent Selection
+
+Specify which opencode agent handles a task. Agents are named configurations
+that define the AI's capabilities, tools, and behaviour.
+
+List available agents: `agent_list()`
+
+Pass `agent` to any send tool:
+
+```javascript
+message_send(
+  directory: "/home/user/my-project",
+  text: "Review the code for security vulnerabilities",
+  agent: "code-reviewer"        // use a specialised agent
+)
+
+prompt_async(
+  directory: "/home/user/my-project",
+  text: "Explore the codebase and report on the data layer architecture",
+  agent: "explore"              // lightweight agent for research
+)
+```
+
+Available on: `message_send`, `prompt_async`, `prompt_and_wait`, `session_command`, `session_shell`.
+
 ## Model Selection
 
 Override the default model on any send:

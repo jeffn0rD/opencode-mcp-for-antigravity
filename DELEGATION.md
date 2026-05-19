@@ -22,8 +22,8 @@ session_get_response(directory: "/path/to/project")
 | Step | Tool | What it does |
 |------|------|-------------|
 | **Create or reuse** | *just pass `directory`* | Session auto-created on first use |
-| **Send blocking** | `message_send(directory, text)` | Sends prompt, blocks until response complete |
-| **Send async** | `prompt_async(directory, text)` | Returns immediately, agent works in background |
+| **Send blocking** | `message_send(directory, text, agent?)` | Sends prompt, blocks until response complete |
+| **Send async** | `prompt_async(directory, text, agent?)` | Returns immediately, agent works in background |
 | **Check status** | `session_poll_status(directory)` | Polls until session becomes idle |
 | **Get result** | `session_get_response(directory)` | Fetch the assistant's response |
 | **See changes** | `session_diff(directory)` | Files modified with line counts |
@@ -39,6 +39,7 @@ Send a review task and wait for the result in one call:
 ```javascript
 message_send(
   directory: "/home/user/my-project",
+  agent: "code-reviewer",
   text: "Review changes in src/api/ since last commit. Check for:\n" +
     "- Security vulnerabilities (SQL injection, XSS, auth bypass)\n" +
     "- Error handling gaps (uncaught promises, missing try/catch)\n" +
@@ -89,6 +90,7 @@ without making any changes:
 ```javascript
 message_send(
   directory: "/home/user/my-project",
+  agent: "explore",
   text: [
     "I need to understand how payments are processed. Do NOT make any changes.",
     "",
@@ -185,6 +187,30 @@ session_revert(directory: "/home/user/my-project", messageID: "msg_start")
 
 ---
 
+## Agent Selection
+
+Use `agent_list()` to see available agents. Pass `agent` to route a task to a
+specific agent:
+
+```javascript
+message_send(
+  directory: "/home/user/my-project",
+  text: "Audit the codebase for credentials hardcoded in source files",
+  agent: "code-reviewer"
+)
+
+prompt_async(
+  directory: "/home/user/my-project",
+  text: "Find all files that import from the legacy utils library",
+  agent: "explore"
+)
+```
+
+Agents are available on: `message_send`, `prompt_async`, `prompt_and_wait`,
+`session_command`, `session_shell`.
+
+---
+
 ## Prompt Writing Tips
 
 | Do | Don't |
@@ -204,9 +230,9 @@ Most tools accept `directory` (defaults to current project root):
 
 | Tool | Purpose |
 |------|---------|
-| `message_send(directory, text, ...)` | Send prompt, block for response |
-| `prompt_async(directory, text, ...)` | Send prompt, return immediately |
-| `prompt_and_wait(directory, text, ...)` | Async + poll, one call |
+| `message_send(directory, text, agent?, ...)` | Send prompt, block for response |
+| `prompt_async(directory, text, agent?, ...)` | Send prompt, return immediately |
+| `prompt_and_wait(directory, text, agent?, ...)` | Async + poll, one call |
 | `session_poll_status(directory, ...)` | Wait until session idle |
 | `session_get_response(directory, ...)` | Fetch latest assistant message |
 | `session_diff(directory)` | Files changed in session |
