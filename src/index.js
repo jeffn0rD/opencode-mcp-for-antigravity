@@ -99,8 +99,6 @@ async function main() {
     
     const transports = new Map();
 
-    app.use(express.json());
-
     app.use((req, res, next) => {
       if (!authToken) return next();
       const authHeader = req.headers.authorization;
@@ -119,8 +117,8 @@ async function main() {
 
     app.get("/sse", async (req, res) => {
       log("info", "New SSE connection established");
-      const sessionId = crypto.randomUUID();
-      const transport = new SSEServerTransport(`/message?sessionId=${sessionId}`, res);
+      const transport = new SSEServerTransport(`/message`, res);
+      const sessionId = transport.sessionId;
       transports.set(sessionId, transport);
       
       res.on("close", () => {
