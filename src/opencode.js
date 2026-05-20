@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { config, BASE_URL, STARTUP_TIMEOUT, POLL_INTERVAL } from "./config.js";
+import { config, BASE_URL, STARTUP_TIMEOUT, POLL_INTERVAL, LAUNCH_DIR } from "./config.js";
 import { log, sleep } from "./logger.js";
 import { apiGet } from "./api.js";
 
@@ -18,6 +18,7 @@ export async function launchOpencode() {
 
   await new Promise((resolve, reject) => {
     const child = spawn(launchCommand, launchArgs, {
+      cwd: LAUNCH_DIR,
       detached: true,
       stdio: "ignore",
     });

@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { homedir as osHomedir } from "os";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -26,6 +27,15 @@ export const BASE_URL = `http://${HOST}:${PORT}`;
 export const STARTUP_TIMEOUT = config.server.startupTimeoutMs;
 export const POLL_INTERVAL = config.server.pollIntervalMs;
 export const DEFAULT_TIMEOUT = config.server.defaultTimeoutMs || 30000;
+
+function expandHomeDir(p) {
+  if (!p || typeof p !== "string") return p;
+  if (p === "~" || p.startsWith("~/")) {
+    return osHomedir() + p.slice(1);
+  }
+  return p;
+}
+export const LAUNCH_DIR = expandHomeDir(config.server.launchDir) || process.cwd();
 export const MSG_WAIT_IDLE = config.messages.waitForIdle;
 export const MSG_MAX_WAIT = config.messages.maxWaitMs;
 export const TOOL_EXCLUDE = new Set((config.tools.exclude || []).map((p) => p.replace("*", "")));

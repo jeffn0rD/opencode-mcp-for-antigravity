@@ -4,6 +4,7 @@
     "port": 4096,
     "launchCommand": "opencode",
     "launchArgs": ["serve"],
+    "launchDir": "~",
     "startupTimeoutMs": 8000,
     "pollIntervalMs": 200,
     "leaveRunningOnExit": true,
